@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Instalador do AutoPhysics</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>AutoPhysics</h1>
+    <p class="lead">Este instalador coloca o painel AutoPhysics dentro do seu Adobe Illustrator. Leva poucos segundos.</p>
+
+    <p id="intro">Procurando o Illustrator nesta máquina...</p>
+    <ul id="found"></ul>
+
+    <p id="plan" class="plan"></p>
+    <p id="runningWarn" class="callout warn" hidden>
+        O Illustrator está aberto. Dá para instalar agora, mas ele só carrega o painel
+        novo depois de ser fechado por completo e aberto de novo.
+    </p>
+
+    <p id="oldWarn" class="callout warn" hidden>
+        O AutoPhysics precisa do <strong>Illustrator 2020 ou mais recente</strong> — o mais novo
+        encontrado aqui é o <span id="oldYear"></span>. Dá para instalar, mas o painel não abre
+        nessa versão.
+    </p>
+
+    <button id="installBtn" disabled>Instalar painel AutoPhysics</button>
+
+    <div id="done" class="callout done" hidden>
+        <strong id="doneTitle">Pronto!</strong>
+        <p id="doneRestart" class="restart">
+            Para o painel funcionar corretamente, <strong>feche o Illustrator por completo
+            (Arquivo &gt; Sair) e abra de novo</strong>.
+        </p>
+        <p>Depois, abra em <strong>Janela &gt; Extensões &gt; AutoPhysics</strong>.</p>
+    </div>
+
+    <h2>Dúvidas comuns</h2>
+
+    <details>
+        <summary>Apareceu um aviso dizendo que este programa pode ser perigoso. É seguro?</summary>
+        <p>
+            O Windows e o macOS mostram esse aviso para qualquer programa que não tem
+            <strong>assinatura digital</strong> — um certificado pago que identifica quem
+            publicou o programa. O AutoPhysics é um projeto gratuito e de código aberto, e por
+            isso não tem essa assinatura. O aviso não significa que algo errado foi
+            encontrado nele.
+        </p>
+        <p>
+            Este instalador faz só o que está descrito na próxima pergunta: não acessa a
+            internet, não coleta dados, não instala mais nada e não precisa de permissão de
+            administrador. O painel em si é um conjunto de scripts (HTML e JavaScript) que
+            roda dentro do Illustrator, e todo o código está aberto em
+            github.com/warroma/adobe-illustrator-autophysics.
+        </p>
+    </details>
+
+    <details>
+        <summary>O que exatamente ele muda no meu computador?</summary>
+        <ol>
+            <li>Copia a pasta do painel (<code>com.autophysics.panel</code>) para a pasta onde o
+                Illustrator procura painéis extras: <code>%APPDATA%\Adobe\CEP\extensions</code>
+                no Windows, <code>~/Library/Application Support/Adobe/CEP/extensions</code> no Mac.</li>
+            <li>Liga o "modo de desenvolvimento" do Illustrator (explicado abaixo), uma
+                configuração que vale só para o seu usuário.</li>
+            <li>No Mac, tira da pasta copiada a marca de "baixado da internet", que impediria o
+                painel de abrir.</li>
+        </ol>
+        <p>Nada além disso.</p>
+    </details>
+
+    <details>
+        <summary>O que é CEP e esse "modo de desenvolvimento"?</summary>
+        <p>
+            CEP é o sistema que a Adobe usa para os painéis extras do Illustrator — o painel
+            Bibliotecas, por exemplo, é feito com ele. Normalmente o Illustrator só carrega
+            painéis com assinatura digital. O "modo de desenvolvimento" é uma chave do próprio
+            Illustrator que permite carregar painéis sem assinatura, como o AutoPhysics.
+        </p>
+        <p>
+            Ela não muda nada no resto do Illustrator, mas vale para qualquer painel sem
+            assinatura — então, como sempre, só instale painéis de quem você confia.
+        </p>
+    </details>
+
+    <details>
+        <summary>Como desinstalar?</summary>
+        <p>
+            Apague a pasta <code>com.autophysics.panel</code> de dentro da pasta de extensões
+            citada acima e reinicie o Illustrator.
+        </p>
+    </details>
+
+    <pre id="log"></pre>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,125 @@
+body {
+    margin: 0;
+    padding: 20px;
+    background: #2b2b2b;
+    color: #d6d6d6;
+    font: 13px "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+h1 {
+    font-size: 18px;
+    margin: 0 0 12px;
+}
+
+#intro {
+    color: #d6d6d6;
+}
+
+#found {
+    margin: 0 0 16px;
+    padding-left: 20px;
+    color: #9fd89f;
+}
+
+#installBtn {
+    width: 100%;
+    padding: 10px;
+    background: #4a9eff;
+    border: 1px solid #4a9eff;
+    color: #fff;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#installBtn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+#installBtn:not(:disabled):hover {
+    background: #6badff;
+}
+
+.plan {
+    margin: 0 0 14px;
+    line-height: 1.5;
+}
+
+.callout {
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin: 0 0 14px;
+    line-height: 1.5;
+}
+.callout[hidden] { display: none; }
+.callout p { margin: 6px 0 0; }
+
+.warn {
+    background: #4a3b1a;
+    border: 1px solid #8a6d1f;
+    color: #e8c766;
+}
+
+.done {
+    background: #1f3324;
+    border: 1px solid #3f7a4c;
+    color: #d6d6d6;
+}
+.done > strong { color: #9fd89f; font-size: 14px; }
+.done .restart { color: #e8c766; }
+
+.lead {
+    margin: 0 0 14px;
+    color: #d6d6d6;
+    line-height: 1.5;
+}
+
+h2 {
+    font-size: 13px;
+    margin: 22px 0 8px;
+    color: #969696;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+}
+
+details {
+    border: 1px solid #191919;
+    border-radius: 4px;
+    background: #323232;
+    margin: 0 0 8px;
+    padding: 0 12px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+details summary {
+    cursor: pointer;
+    padding: 9px 0;
+    color: #d6d6d6;
+    font-weight: 600;
+}
+details[open] summary { border-bottom: 1px solid #191919; margin-bottom: 8px; }
+details p, details ol { margin: 0 0 10px; color: #b4b4b4; }
+details ol { padding-left: 18px; }
+details li { margin-bottom: 6px; }
+details code { font-size: 11px; color: #d6d6d6; word-break: break-all; }
+
+#log:empty { display: none; }
+
+.hint {
+    font-size: 11.5px;
+    color: #969696;
+    line-height: 1.5;
+    margin: 14px 0;
+}
+
+#log {
+    white-space: pre-wrap;
+    background: #1e1e1e;
+    border: 1px solid #191919;
+    border-radius: 4px;
+    padding: 10px;
+    min-height: 80px;
+    font-size: 11px;
+    color: #b7e3b7;
+}

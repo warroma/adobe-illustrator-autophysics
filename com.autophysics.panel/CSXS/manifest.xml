@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.autophysics.panel" ExtensionBundleVersion="1.0.0"
+    ExtensionBundleName="AutoPhysics" xmlns:ExtensionList="http://ns.adobe.com/extension-list/1.0">
+    <ExtensionList>
+        <Extension Id="com.autophysics.panel.main" Version="1.0.0" />
+    </ExtensionList>
+    <ExecutionEnvironment>
+        <HostList>
+            <!-- 24.0 (CC 2020): primeira versão com PageItem.uuid / getPageItemFromUuid. -->
+            <Host Name="ILST" Version="[24.0,99.9]" />
+        </HostList>
+        <LocaleList>
+            <Locale Code="All" />
+        </LocaleList>
+        <RequiredRuntimeList>
+            <RequiredRuntime Name="CSXS" Version="9.0" />
+        </RequiredRuntimeList>
+    </ExecutionEnvironment>
+    <DispatchInfoList>
+        <Extension Id="com.autophysics.panel.main">
+            <DispatchInfo>
+                <Resources>
+                    <MainPath>./index.html</MainPath>
+                    <ScriptPath>./jsx/host.jsx</ScriptPath>
+                </Resources>
+                <Lifecycle>
+                    <AutoVisible>true</AutoVisible>
+                </Lifecycle>
+                <UI>
+                    <Type>Panel</Type>
+                    <Menu>AutoPhysics</Menu>
+                    <Geometry>
+                        <Size>
+                            <Height>760</Height>
+                            <Width>340</Width>
+                        </Size>
+                        <MinSize>
+                            <Height>420</Height>
+                            <Width>300</Width>
+                        </MinSize>
+                        <MaxSize>
+                            <Height>1400</Height>
+                            <Width>560</Width>
+                        </MaxSize>
+                    </Geometry>
+                    <!-- Ícone do painel recolhido no dock: PNG 23x23 + @2X (46x46), no mesmo
+                         traço dos ícones do AutoGrids. Normal/RollOver = temas claros da
+                         UI; Dark* = temas escuros. -->
+                    <Icons>
+                        <Icon Type="Normal">./icons/icon-normal.png</Icon>
+                        <Icon Type="RollOver">./icons/icon-rollover.png</Icon>
+                        <Icon Type="DarkNormal">./icons/icon-dark-normal.png</Icon>
+                        <Icon Type="DarkRollOver">./icons/icon-dark-rollover.png</Icon>
+                    </Icons>
+                </UI>
+            </DispatchInfo>
+        </Extension>
+    </DispatchInfoList>
+</ExtensionManifest>

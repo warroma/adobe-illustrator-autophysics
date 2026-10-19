@@ -1,0 +1,63 @@
+# Gera os instaladores e publica a release.
+#
+# Disparo: empurrar uma tag "v*" (ex.: git tag v1.0.0 && git push origin v1.0.0).
+# Cada sistema é montado na própria plataforma (o electron-builder não gera .dmg
+# fora do macOS), e a release usa as notas de docs/release-notes/<tag>.md.
+# Os nomes dos arquivos são fixos para o README poder apontar sempre para
+# releases/latest/download/<arquivo>.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: installer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run dist
+        env:
+          # Sem certificado de assinatura (decisão consciente): não procurar um.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: instalador-${{ matrix.os }}
+          path: |
+            installer/dist/AutoPhysics-Instalador-*.exe
+            installer/dist/AutoPhysics-Instalador-*.dmg
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artefatos
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: AutoPhysics ${{ github.ref_name }}
+          body_path: docs/release-notes/${{ github.ref_name }}.md
+          files: artefatos/*

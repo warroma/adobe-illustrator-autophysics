@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>AutoPhysics</title>
+    <link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+    <div class="app">
+        <div class="artboard-bar">
+            <div class="artboard-bar-top">
+                <span class="artboard-caption">Caixa da simulação</span>
+                <span class="artboard-count" id="objCount"></span>
+            </div>
+            <div class="artboard-name" id="abName">Nenhum objeto capturado</div>
+            <div class="artboard-grid" id="abInfo">Selecione os objetos que vão cair e clique em "Capturar seleção".</div>
+        </div>
+
+        <button id="captureBtn" class="primary">Capturar seleção</button>
+
+        <!-- ===== Objetos (cada um com a sua elasticidade, peso e offset) ===== -->
+        <div class="section-title">
+            <span>Objetos</span>
+            <button class="link" id="selectAllBtn">selecionar todos</button>
+        </div>
+        <div class="obj-list" id="objList"><div class="obj-empty">Nada capturado ainda.</div></div>
+
+        <div class="sub-panel" id="objControls">
+            <div class="sub-caption" id="objCaption">Clique num objeto da lista para ajustar.</div>
+            <div class="field">
+                <label>Elasticidade <span class="hint">(quanto quica)</span></label>
+                <div class="field-row">
+                    <input type="range" id="elasticity" min="0" max="100" step="1" value="30">
+                    <input type="text" id="elasticityVal" class="num">
+                    <span class="unit-label">%</span>
+                </div>
+            </div>
+            <div class="field">
+                <label>Peso <span class="hint">(densidade relativa)</span></label>
+                <div class="field-row">
+                    <input type="range" id="weight" min="-1" max="1" step="0.01" value="0">
+                    <input type="text" id="weightVal" class="num">
+                    <span class="unit-label">×</span>
+                </div>
+            </div>
+            <div class="field">
+                <label>Offset de colisão</label>
+                <div class="field-row">
+                    <input type="range" id="offset" min="-20" max="20" step="0.25" value="0">
+                    <input type="text" id="offsetVal" class="num">
+                    <span class="unit-label" id="offsetUnit">mm</span>
+                </div>
+                <div class="unit-toggle mini" id="unitToggle">
+                    <button data-unit="mm" class="active">mm</button>
+                    <button data-unit="pt">pt</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== Mundo (vale para todos) ===== -->
+        <div class="section-title"><span>Mundo</span></div>
+        <div class="field">
+            <label>Gravidade <span class="hint" id="gravityHint">9,8 m/s²</span></label>
+            <div class="field-row">
+                <input type="range" id="gravity" min="0" max="300" step="1" value="100">
+                <input type="text" id="gravityVal" class="num">
+                <span class="unit-label">%</span>
+            </div>
+        </div>
+        <div class="field">
+            <label>Resistência do ar <span class="hint">(faz o peso importar na queda)</span></label>
+            <div class="field-row">
+                <input type="range" id="air" min="0" max="100" step="1" value="25">
+                <input type="text" id="airVal" class="num">
+                <span class="unit-label">%</span>
+            </div>
+        </div>
+        <div class="field">
+            <label>Atrito</label>
+            <div class="field-row">
+                <input type="range" id="friction" min="0" max="100" step="1" value="50">
+                <input type="text" id="frictionVal" class="num">
+                <span class="unit-label">%</span>
+            </div>
+        </div>
+        <div class="field">
+            <label>Duração máxima</label>
+            <div class="field-row">
+                <input type="range" id="maxSeconds" min="1" max="20" step="0.5" value="8">
+                <input type="text" id="maxSecondsVal" class="num">
+                <span class="unit-label">s</span>
+            </div>
+        </div>
+        <div class="field">
+            <label>Paredes da prancheta</label>
+            <div class="toggle-row" id="wallToggles">
+                <button data-wall="floor" class="active">Chão</button>
+                <button data-wall="sides" class="active">Laterais</button>
+                <button data-wall="ceiling">Teto</button>
+            </div>
+        </div>
+
+        <button id="simulateBtn" class="primary">Simular</button>
+
+        <div class="preview" id="previewWrap">
+            <canvas id="preview"></canvas>
+            <div class="preview-controls">
+                <button id="playBtn" title="Reproduzir">▶</button>
+                <input type="range" id="scrub" min="0" max="0" step="1" value="0">
+                <span id="timeLabel">0,0 s</span>
+            </div>
+        </div>
+
+        <button id="applyBtn">Aplicar estado final</button>
+
+        <!-- ===== GIF ===== -->
+        <div class="section-title"><span>Exportar GIF</span></div>
+        <div class="gif-grid">
+            <label>Largura
+                <select id="gifWidth">
+                    <option value="400">400 px</option>
+                    <option value="600" selected>600 px</option>
+                    <option value="800">800 px</option>
+                    <option value="1080">1080 px</option>
+                </select>
+            </label>
+            <label>Quadros/s
+                <select id="gifFps">
+                    <option value="20">20</option>
+                    <option value="25" selected>25</option>
+                    <option value="33">33</option>
+                    <option value="50">50</option>
+                </select>
+            </label>
+            <label>Velocidade
+                <select id="gifSpeed">
+                    <option value="0.5">0,5× (câmera lenta)</option>
+                    <option value="1" selected>1×</option>
+                    <option value="2">2×</option>
+                </select>
+            </label>
+            <label>Parado no fim
+                <select id="gifHold">
+                    <option value="0">0 s</option>
+                    <option value="0.5">0,5 s</option>
+                    <option value="1.5" selected>1,5 s</option>
+                    <option value="3">3 s</option>
+                </select>
+            </label>
+            <label>Fundo
+                <select id="gifBackground">
+                    <option value="art" selected>Arte da prancheta</option>
+                    <option value="white">Branco</option>
+                </select>
+            </label>
+            <label class="check"><input type="checkbox" id="gifLoop" checked> Repetir</label>
+        </div>
+        <button id="gifBtn">Exportar GIF…</button>
+
+        <div id="status"></div>
+
+        <div class="disclaimer">
+            A colisão usa a "casca" convexa de cada objeto (como um elástico esticado em volta dele): estrelas, letras e outras formas côncavas colidem pela casca. Grupos caem como um objeto só; texto vivo colide pela caixa do texto. O GIF é montado a partir da aparência real de cada objeto no Illustrator.
+        </div>
+    </div>
+
+    <script src="./js/CSInterface.js"></script>
+    <script src="./js/physics.js"></script>
+    <script src="./js/bridge.js"></script>
+    <script src="./js/gif.js"></script>
+    <script src="./js/main.js"></script>
+</body>
+</html>

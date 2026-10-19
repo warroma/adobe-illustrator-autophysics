@@ -1,0 +1,37 @@
+{
+  "name": "autophysics-installer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Instalador do painel AutoPhysics para Adobe Illustrator (Windows/macOS)",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/detect.test.js && node test/install.test.js && npm run test:panel",
+    "test:panel": "node ../test/physics.test.js && node ../test/gif.test.js && node ../test/bridge.test.js",
+    "dist": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.autophysics.installer",
+    "productName": "AutoPhysics Installer",
+    "icon": "build/icon.png",
+    "files": [
+      "src/**/*"
+    ],
+    "extraResources": [
+      { "from": "../com.autophysics.panel", "to": "com.autophysics.panel" }
+    ],
+    "mac": {
+      "target": [{ "target": "dmg", "arch": ["universal"] }],
+      "category": "public.app-category.graphics-design",
+      "artifactName": "AutoPhysics-Instalador-macOS.${ext}"
+    },
+    "win": {
+      "target": "portable",
+      "artifactName": "AutoPhysics-Instalador-Windows.${ext}"
+    }
+  }
+}
