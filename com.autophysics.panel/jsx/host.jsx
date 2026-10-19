@@ -85,8 +85,9 @@ function approxColor(item, depth) {
         if (t === "CompoundPathItem" && item.pathItems.length > 0) return approxColor(item.pathItems[0], depth + 1);
         if (t === "TextFrame") return colorToRGB(item.textRange.characterAttributes.fillColor);
         if (t === "GroupItem") {
+            var clipped = safe(function () { return item.clipped; }, false);
             for (i = 0; i < item.pageItems.length && i < 20; i++) {
-                if (item.clipped && item.pageItems[i].clipping) continue;
+                if (clipped && item.pageItems[i].clipping) continue;
                 rgb = approxColor(item.pageItems[i], depth + 1);
                 if (rgb) return rgb;
             }
@@ -115,35 +116,76 @@ function boundsToString(gb) {
     return "c:" + [l, t, l, t, l, t, r, t, r, t, r, t, r, b, r, b, r, b, l, b, l, b, l, b].join(",");
 }
 
+// Lê uma propriedade sem deixar o erro subir. Alguns objetos — texto em
+// contornos com efeito 3D, por exemplo — respondem a leituras comuns (como
+// GroupItem.clipped) com o erro genérico do Illustrator 1346458189 ('PARM').
+// Uma leitura dessas não pode derrubar a captura inteira: quem chama cai num
+// plano B (os limites do objeto).
+function safe(read, fallback) {
+    try {
+        return read();
+    } catch (e) {
+        return fallback;
+    }
+}
+
+function boundsOf(item) {
+    return safe(function () { return item.geometricBounds; }, null) ||
+        safe(function () { return item.visibleBounds; }, null);
+}
+
+function pushBounds(item, acc) {
+    var gb = boundsOf(item);
+    if (gb) acc.paths.push(boundsToString(gb));
+}
+
 // Junta em "acc" os contornos de um objeto. Grupo com máscara: só a máscara
 // conta (o que está fora dela não aparece). Texto, imagem, símbolo etc.:
-// retângulo dos limites.
+// retângulo dos limites. Qualquer parte que o Illustrator se recuse a
+// descrever entra pelo retângulo dos limites dela.
 function collectOutline(item, acc) {
-    var t = item.typename, i;
+    var t = safe(function () { return item.typename; }, ""), i;
     if (t === "PathItem") {
-        if (item.guides) return;
-        if (item.stroked && item.strokeWidth > 0) acc.stroke = Math.max(acc.stroke, item.strokeWidth / 2);
-        if (acc.detailed < MAX_DETAILED_PATHS && item.pathPoints.length > 0) {
-            acc.detailed++;
-            acc.paths.push(pathToString(item));
-        } else {
-            acc.paths.push(boundsToString(item.geometricBounds));
+        if (safe(function () { return item.guides; }, false)) return;
+        var half = safe(function () { return item.stroked && item.strokeWidth > 0 ? item.strokeWidth / 2 : 0; }, 0);
+        acc.stroke = Math.max(acc.stroke, half);
+        if (acc.detailed < MAX_DETAILED_PATHS) {
+            var str = safe(function () { return item.pathPoints.length > 0 ? pathToString(item) : null; }, null);
+            if (str) {
+                acc.detailed++;
+                acc.paths.push(str);
+                return;
+            }
         }
+        pushBounds(item, acc);
         return;
     }
     if (t === "CompoundPathItem") {
-        for (i = 0; i < item.pathItems.length; i++) collectOutline(item.pathItems[i], acc);
+        var parts = safe(function () { return item.pathItems; }, null);
+        var n = parts ? safe(function () { return parts.length; }, 0) : 0;
+        if (!n) { pushBounds(item, acc); return; }
+        for (i = 0; i < n; i++) {
+            var part = safe(function () { return parts[i]; }, null);
+            if (part) collectOutline(part, acc);
+        }
         return;
     }
     if (t === "GroupItem") {
-        var children = item.pageItems, usedClip = false;
-        if (item.clipped) {
-            for (i = 0; i < children.length; i++) {
-                var ch = children[i];
-                var isClip = false;
-                try {
-                    isClip = ch.clipping || (ch.typename === "CompoundPathItem" && ch.pathItems.length > 0 && ch.pathItems[0].clipping);
-                } catch (e) { isClip = false; }
+        var children = safe(function () { return item.pageItems; }, null);
+        var count = children ? safe(function () { return children.length; }, 0) : 0;
+        if (!count) { pushBounds(item, acc); return; }
+        var kids = [];
+        for (i = 0; i < count; i++) {
+            var kid = safe(function () { return children[i]; }, null);
+            if (kid) kids.push(kid);
+        }
+        var usedClip = false;
+        if (safe(function () { return item.clipped; }, false)) {
+            for (i = 0; i < kids.length; i++) {
+                var ch = kids[i];
+                var isClip = safe(function () {
+                    return ch.clipping || (ch.typename === "CompoundPathItem" && ch.pathItems.length > 0 && ch.pathItems[0].clipping);
+                }, false);
                 if (isClip) {
                     collectOutline(ch, acc);
                     usedClip = true;
@@ -151,13 +193,13 @@ function collectOutline(item, acc) {
             }
         }
         if (!usedClip) {
-            for (i = 0; i < children.length; i++) {
-                if (!children[i].hidden) collectOutline(children[i], acc);
+            for (i = 0; i < kids.length; i++) {
+                if (!safe(function () { return kids[i].hidden; }, false)) collectOutline(kids[i], acc);
             }
         }
         return;
     }
-    acc.paths.push(boundsToString(item.geometricBounds));
+    pushBounds(item, acc);
 }
 
 // ===== propriedades (Tag) =====
@@ -200,7 +242,8 @@ function artboardRect(doc, i) {
 function pickArtboard(doc, items) {
     var l = Infinity, t = -Infinity, r = -Infinity, b = Infinity, i;
     for (i = 0; i < items.length; i++) {
-        var gb = items[i].geometricBounds;
+        var gb = boundsOf(items[i]);
+        if (!gb) continue;
         l = Math.min(l, gb[0]); r = Math.max(r, gb[2]);
         t = Math.max(t, gb[1]); b = Math.min(b, gb[3]);
     }
@@ -221,8 +264,14 @@ function pickArtboard(doc, items) {
 //
 // Linha 1: "OK|índice da prancheta|nome|left,top,right,bottom|quantidade"
 // Uma linha por objeto:
-//   "uuid|nome|tipo|meio traço|r,g,b|left,top,right,bottom|props|contornos"
-// (contornos separados por ";").
+//   "uuid|nome|tipo|meio traço|r,g,b|limites geométricos|limites visíveis|props|contornos"
+// (limites = left,top,right,bottom; contornos separados por ";"). Os limites
+// visíveis incluem traço e efeitos (3D, sombra...): o painel compara com os
+// geométricos para saber se a aparência é maior que o desenho.
+
+function boundsField(b) {
+    return b ? [r3(b[0]), r3(b[1]), r3(b[2]), r3(b[3])].join(",") : "";
+}
 
 function describe(doc, items) {
     var abIndex = pickArtboard(doc, items);
@@ -233,15 +282,18 @@ function describe(doc, items) {
         var it = items[i];
         var acc = { paths: [], stroke: 0, detailed: 0 };
         collectOutline(it, acc);
+        var gb = boundsOf(it);
+        if (!acc.paths.length && gb) acc.paths.push(boundsToString(gb));
+        var vb = safe(function () { return it.visibleBounds; }, null);
         var rgb = approxColor(it, 0) || [150, 150, 150];
-        var gb = it.geometricBounds;
         lines.push([
             it.uuid,
-            cleanText(it.name),
-            it.typename,
+            cleanText(safe(function () { return it.name; }, "")),
+            safe(function () { return it.typename; }, "PageItem"),
             r3(acc.stroke),
             rgb.join(","),
-            [r3(gb[0]), r3(gb[1]), r3(gb[2]), r3(gb[3])].join(","),
+            boundsField(gb),
+            boundsField(vb),
             readProps(it),
             acc.paths.join(";")
         ].join("|"));

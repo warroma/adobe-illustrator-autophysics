@@ -10,24 +10,27 @@
 
     var Physics = root.AutoPhysics || (typeof require === "function" ? require("./physics.js") : null);
 
-    var DEFAULT_PROPS = { e: 0.3, w: 1, o: 0 };
+    // a = colidir pela aparência (efeitos 3D, sombra...): -1 automático, 0 não, 1 sim.
+    var DEFAULT_PROPS = { e: 0.3, w: 1, o: 0, a: -1 };
 
-    // ===== Propriedades por objeto (Tag "AutoPhysics": "e=0.3;w=1;o=0") =====
+    // ===== Propriedades por objeto (Tag "AutoPhysics": "e=0.3;w=1;o=0;a=1") =====
 
     function parseProps(str) {
-        var p = { e: DEFAULT_PROPS.e, w: DEFAULT_PROPS.w, o: DEFAULT_PROPS.o };
+        var p = { e: DEFAULT_PROPS.e, w: DEFAULT_PROPS.w, o: DEFAULT_PROPS.o, a: DEFAULT_PROPS.a };
         String(str || "").split(";").forEach(function (kv) {
-            var m = /^\s*([ewo])\s*=\s*(-?[\d.]+)\s*$/.exec(kv);
+            var m = /^\s*([ewoa])\s*=\s*(-?[\d.]+)\s*$/.exec(kv);
             if (m) p[m[1]] = parseFloat(m[2]);
         });
         p.e = Math.max(0, Math.min(1, p.e));
         p.w = Math.max(0.1, Math.min(10, p.w));
         p.o = Math.max(-100, Math.min(100, p.o));
+        p.a = p.a === 0 || p.a === 1 ? p.a : -1;
         return p;
     }
 
     function formatProps(p) {
-        return "e=" + round(p.e, 3) + ";w=" + round(p.w, 3) + ";o=" + round(p.o, 3);
+        var out = "e=" + round(p.e, 3) + ";w=" + round(p.w, 3) + ";o=" + round(p.o, 3);
+        return p.a === 0 || p.a === 1 ? out + ";a=" + p.a : out;
     }
 
     function round(v, d) {
@@ -76,18 +79,77 @@
         for (var i = 1; i < lines.length; i++) {
             if (!lines[i]) continue;
             var f = lines[i].split("|");
-            desc.items.push({
+            var it = {
                 uuid: f[0],
                 name: f[1],
                 typename: f[2],
                 stroke: parseFloat(f[3]) || 0,
                 color: f[4].split(",").map(function (v) { return parseInt(v, 10); }),
-                bounds: f[5].split(",").map(parseFloat),
-                props: f[6],
-                paths: f[7] ? f[7].split(";").map(parsePath) : []
-            });
+                bounds: parseBox(f[5]),
+                visibleBounds: parseBox(f[6]),
+                props: f[7],
+                paths: f[8] ? f[8].split(";").map(parsePath) : []
+            };
+            it.effect = effectOf(desc.abRect, it);
+            desc.items.push(it);
         }
         return desc;
+    }
+
+    function parseBox(str) {
+        var v = String(str || "").split(",").map(parseFloat);
+        return v.length === 4 && v.every(isFinite) ? v : null;
+    }
+
+    // Quanto a aparência (limites visíveis) passa do desenho (limites
+    // geométricos + meio traço), em coordenadas locais. Uma extrusão 3D cresce
+    // para UM lado: vira o deslocamento (dx, dy) da "face de trás"; o que
+    // cresce por igual dos quatro lados (desfoque, brilho) vira "sym".
+    // active = a aparência é visivelmente maior que o desenho.
+    function effectOf(abRect, it) {
+        var none = { active: false, dx: 0, dy: 0, sym: 0 };
+        if (!it.bounds || !it.visibleBounds) return none;
+        var fr = frame(abRect);
+        function box(b) {
+            var xa = fr.toLocalX(b[0]), xb = fr.toLocalX(b[2]), ya = fr.toLocalY(b[1]), yb = fr.toLocalY(b[3]);
+            return { x0: Math.min(xa, xb), x1: Math.max(xa, xb), y0: Math.min(ya, yb), y1: Math.max(ya, yb) };
+        }
+        var g = box(it.bounds), v = box(it.visibleBounds), st = it.stroke || 0;
+        var gl = Math.max(0, g.x0 - v.x0 - st), gr = Math.max(0, v.x1 - g.x1 - st);
+        var gt = Math.max(0, g.y0 - v.y0 - st), gb = Math.max(0, v.y1 - g.y1 - st);
+        var size = Math.max(g.x1 - g.x0, g.y1 - g.y0, 1);
+        var grow = Math.max(gl, gr, gt, gb);
+        return {
+            active: grow > Math.max(1, 0.02 * size),
+            dx: gr - gl, dy: gb - gt,
+            sym: Math.min(gl, gr, gt, gb)
+        };
+    }
+
+    function useAppearance(p, effect) {
+        return p.a === 1 || (p.a === -1 && effect && effect.active);
+    }
+
+    // Colisão pela aparência: cada peça convexa é "varrida" pelo deslocamento
+    // da extrusão (casca da peça + a mesma peça deslocada) — exatamente o
+    // volume de uma extrusão reta —, e o crescimento por igual entra como
+    // offset. Um círculo vira polígono antes de varrer.
+    function sweepShape(shape, effect) {
+        if (Math.abs(effect.dx) < 0.5 && Math.abs(effect.dy) < 0.5) return shape;
+        var parts = shape.kind === "circle" ? [circlePolygon(shape, 24)] : shape.parts;
+        var hull = Physics._internal.convexHull;
+        return {
+            kind: "parts",
+            parts: parts.map(function (pt) {
+                return hull(pt.concat(pt.map(function (v) { return { x: v.x + effect.dx, y: v.y + effect.dy }; })));
+            })
+        };
+    }
+
+    function circlePolygon(c, n) {
+        var out = [];
+        for (var k = 0; k < n; k++) out.push({ x: c.cx + c.r * Math.cos(2 * Math.PI * k / n), y: c.cy + c.r * Math.sin(2 * Math.PI * k / n) });
+        return out;
     }
 
     function parsePath(s) {
@@ -117,17 +179,27 @@
             if (c.x < 0 || c.x > fr.width) { skipped.push({ uuid: it.uuid, reason: "fora da prancheta" }); return; }
             if (c.y > fr.height) { skipped.push({ uuid: it.uuid, reason: "abaixo da prancheta" }); return; }
             var p = propsByUuid[it.uuid] || parseProps(it.props);
-            scene.items.push({ shape: shape, restitution: p.e, weight: p.w, offset: p.o + it.stroke });
-            meta.push({ uuid: it.uuid, bounds: it.bounds, color: it.color, props: p });
+            var offset = p.o + it.stroke;
+            var appearance = useAppearance(p, it.effect);
+            if (appearance) {
+                shape = sweepShape(shape, it.effect);
+                offset += it.effect.sym;
+            }
+            scene.items.push({ shape: shape, restitution: p.e, weight: p.w, offset: offset });
+            meta.push({
+                uuid: it.uuid, bounds: it.bounds, color: it.color, props: p, appearance: appearance,
+                // Desenho de verdade (com miolos), para a prévia.
+                art: Physics._internal.sampleSubpaths(local, 6)
+            });
         });
         return { scene: scene, meta: meta, skipped: skipped, frame: fr };
     }
 
     function shapeCenter(shape) {
         if (shape.kind === "circle") return { x: shape.cx, y: shape.cy };
-        var sx = 0, sy = 0;
-        shape.verts.forEach(function (v) { sx += v.x; sy += v.y; });
-        return { x: sx / shape.verts.length, y: sy / shape.verts.length };
+        var sx = 0, sy = 0, n = 0;
+        shape.parts.forEach(function (pt) { pt.forEach(function (v) { sx += v.x; sy += v.y; n++; }); });
+        return { x: sx / n, y: sy / n };
     }
 
     // ===== Estado final -> chamada do host =====
@@ -231,6 +303,8 @@
         formatProps: formatProps,
         frame: frame,
         parseDescription: parseDescription,
+        effectOf: effectOf,
+        useAppearance: useAppearance,
         buildScene: buildScene,
         buildApplySpec: buildApplySpec,
         parseBounds: parseBounds,

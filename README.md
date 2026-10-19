@@ -2,7 +2,7 @@
 
 Painel para o Adobe Illustrator que **deixa objetos caírem dentro da prancheta**: eles despencam com gravidade, batem uns nos outros e nas bordas da prancheta, quicam e se acomodam numa pilha. Você aplica o resultado no documento e pode **exportar a queda como GIF animado** — uma animação feita a partir da arte do próprio Illustrator.
 
-> **Versão 1.0.0 — experimental, em validação.** Primeira versão para testar no dia a dia. Encontrou algo estranho? Abra uma [issue](https://github.com/warroma/adobe-illustrator-autophysics/issues).
+> **Versão 1.1.0 — experimental, em validação.** Primeira versão para testar no dia a dia. Encontrou algo estranho? Abra uma [issue](https://github.com/warroma/adobe-illustrator-autophysics/issues).
 
 Projeto irmão do [AutoGrids](https://github.com/warroma/adobe-illustrator-autogrids) (grades de referência), com a mesma arquitetura e o mesmo tipo de instalador.
 
@@ -69,8 +69,9 @@ Projeto irmão do [AutoGrids](https://github.com/warroma/adobe-illustrator-autog
    - **Elasticidade**: quanto ele quica (0% = cai e para; 100% = quica para sempre).
    - **Peso**: densidade relativa. O mais pesado empurra o mais leve nas colisões e, com resistência do ar, cai mais rápido.
    - **Offset de colisão**: positivo deixa uma folga em volta do objeto; negativo deixa os objetos se sobreporem.
+   - **Colidir pela aparência**: para objetos com efeito que aumenta o desenho (extrusão 3D, sombra), colide pela aparência em vez do desenho. Liga sozinho quando o painel percebe o efeito; desmarque se quiser colidir só pelo desenho (ex.: numa sombra).
 3. **Ajuste o mundo**: gravidade (100% = Terra), resistência do ar, atrito, duração máxima e paredes.
-4. **Simular** — a prévia mostra as formas de colisão caindo. Ajuste e simule de novo quantas vezes quiser; o documento não é tocado.
+4. **Simular** — a prévia mostra os objetos caindo, com a forma de verdade por cima e a área de colisão em transparência por baixo. Ajuste e simule de novo quantas vezes quiser; o documento não é tocado.
 5. **Aplicar estado final** move os objetos para onde a simulação terminou. `Ctrl+Z` / `Cmd+Z` volta tudo ao início.
 6. **Exportar GIF…** — largura, quadros por segundo, velocidade (câmera lenta), tempo parado no fim, fundo (a arte da prancheta ou branco) e repetição. Funciona antes ou depois de aplicar o estado final.
 
@@ -79,6 +80,8 @@ Os ajustes de cada objeto ficam gravados nele (numa *tag* invisível do Illustra
 ## Como a física funciona
 
 - O motor (`com.autophysics.panel/js/physics.js`) segue o **Box2D** de Erin Catto: colisão entre polígonos convexos e círculos (SAT + recorte de arestas), impulsos sequenciais com *warm starting* e correção de penetração separada da velocidade — é o que deixa uma pilha parada em vez de tremendo. Roda no próprio painel, em passos de 1/200 s; 150 objetos levam menos de 1 segundo.
+- **Formas côncavas** (letras como "u", "h", "c", "S"): o contorno é dividido em peças convexas presas num corpo só, pelo algoritmo de Bayazit (o mesmo da `poly-decomp` usada pelo Matter.js) — a concha de um "u" fica aberta e outros objetos podem cair dentro dela. Miolos **fechados** (o de "O", "A", "B") colidem como cheios: nada consegue entrar neles mesmo. Círculos são reconhecidos e rolam de verdade.
+- **Efeitos (3D, sombra)**: o painel compara os limites visíveis com os geométricos. Uma extrusão cresce para um lado: cada peça é "varrida" até a face de trás, que é exatamente o volume de uma extrusão reta.
 - **Elasticidade** (restituição): na batida, a velocidade de volta é a de chegada × elasticidade, então a altura do quique é elasticidade² da queda. Entre dois objetos vale a maior das duas (uma bola elástica quica até num chão "morto").
 - **Peso e gravidade**: no vácuo, objetos pesados e leves caem juntos (Galileu) — o peso só muda as colisões. Por isso existe a **resistência do ar**: um arrasto proporcional ao tamanho e à velocidade faz cada objeto ter a sua velocidade terminal, `g × massa / arrasto`. Com ar, o mais pesado cai mais rápido.
 - **Escala**: a prancheta vale ~2 m (raiz de largura × altura). Com 100% de gravidade, um objeto cai a altura de uma A4 em ~0,6 s, como cairia de 2 m de verdade.
@@ -87,8 +90,9 @@ Os ajustes de cada objeto ficam gravados nele (numa *tag* invisível do Illustra
 
 ## Limitações
 
-- A colisão usa a **"casca" convexa** de cada objeto (como um elástico esticado em volta dele). Estrelas, letras e outras formas côncavas colidem pela casca. Círculos são reconhecidos e rolam de verdade.
-- **Texto vivo** colide pela caixa do texto; para colisão pelas letras, converta em contornos.
+- **Texto vivo** colide pela caixa do texto; para colisão pelas letras, converta em contornos (**Texto > Criar contornos**) e capture cada letra (desagrupe para cada uma cair separada).
+- Curvas são simplificadas com até ~1% de desvio do tamanho do objeto (≈1 pt numa letra de 90 pt).
+- **Efeitos 3D ao girar**: no documento, o Illustrator recalcula o 3D depois de girar o objeto, então a face lateral da extrusão de uma letra tombada pode ficar um pouco diferente da prévia e do GIF (que giram a aparência como um bloco).
 - No GIF, a ordem de empilhamento dos objetos segue a da seleção, e a arte que **não** foi simulada fica sempre atrás deles.
 - GIF tem no máximo 256 cores: degradês muito suaves podem ganhar faixas.
 

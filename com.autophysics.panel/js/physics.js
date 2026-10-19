@@ -318,8 +318,11 @@
 
     // ===== Corpos =====
 
+    // Um corpo rígido pode ter várias formas convexas presas a ele (as
+    // "fixtures" do Box2D) — é assim que uma letra côncava como "u" colide pelo
+    // desenho de verdade: várias peças convexas que se movem juntas.
     function Body(def) {
-        this.shape = def.shape;
+        this.shapes = def.shapes || [def.shape];
         this.isStatic = !!def.isStatic;
         this.cx = def.x; this.cy = def.y; this.a = def.angle || 0;
         this.vx = 0; this.vy = 0; this.w = 0;
@@ -342,22 +345,49 @@
         this.xf = makeXf(this.cx, this.cy, this.a);
     };
 
+    // Caixa de cada forma (para o narrowphase descartar pares de peças que nem
+    // se tocam) e a do corpo inteiro (para o broadphase).
     Body.prototype.updateAABB = function () {
-        var s = this.shape, b = this.aabb, r = s.radius + AABB_MARGIN;
-        if (s.type === CIRCLE) {
-            var c = mulXf(this.xf, s.px, s.py);
-            b.minX = c.x - r; b.maxX = c.x + r; b.minY = c.y - r; b.maxY = c.y + r;
-            return;
+        var b = this.aabb;
+        b.minX = Infinity; b.minY = Infinity; b.maxX = -Infinity; b.maxY = -Infinity;
+        for (var k = 0; k < this.shapes.length; k++) {
+            var s = this.shapes[k], r = s.radius + AABB_MARGIN;
+            var sb = s.aabb || (s.aabb = { minX: 0, minY: 0, maxX: 0, maxY: 0 });
+            if (s.type === CIRCLE) {
+                var c = mulXf(this.xf, s.px, s.py);
+                sb.minX = c.x - r; sb.maxX = c.x + r; sb.minY = c.y - r; sb.maxY = c.y + r;
+            } else {
+                var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                for (var i = 0; i < s.count; i++) {
+                    var p = mulXf(this.xf, s.v[i].x, s.v[i].y);
+                    if (p.x < minX) minX = p.x;
+                    if (p.x > maxX) maxX = p.x;
+                    if (p.y < minY) minY = p.y;
+                    if (p.y > maxY) maxY = p.y;
+                }
+                sb.minX = minX - r; sb.maxX = maxX + r; sb.minY = minY - r; sb.maxY = maxY + r;
+            }
+            if (sb.minX < b.minX) b.minX = sb.minX;
+            if (sb.minY < b.minY) b.minY = sb.minY;
+            if (sb.maxX > b.maxX) b.maxX = sb.maxX;
+            if (sb.maxY > b.maxY) b.maxY = sb.maxY;
         }
-        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (var i = 0; i < s.count; i++) {
-            var p = mulXf(this.xf, s.v[i].x, s.v[i].y);
-            if (p.x < minX) minX = p.x;
-            if (p.x > maxX) maxX = p.x;
-            if (p.y < minY) minY = p.y;
-            if (p.y > maxY) maxY = p.y;
+    };
+
+    // Maior distância do centro de massa até a borda (para medir giro).
+    Body.prototype.reach = function () {
+        if (this.br !== undefined) return this.br;
+        var r = 0;
+        for (var k = 0; k < this.shapes.length; k++) {
+            var s = this.shapes[k];
+            if (s.type === CIRCLE) {
+                r = Math.max(r, Math.sqrt(s.px * s.px + s.py * s.py) + s.radius);
+                continue;
+            }
+            for (var i = 0; i < s.count; i++) r = Math.max(r, Math.sqrt(s.v[i].x * s.v[i].x + s.v[i].y * s.v[i].y) + s.radius);
         }
-        b.minX = minX - r; b.maxX = maxX + r; b.minY = minY - r; b.maxY = maxY + r;
+        this.br = r;
+        return r;
     };
 
     // ===== Mundo =====
@@ -370,27 +400,33 @@
         this.contacts = {};
         this.order = [];
         this.stamp = 0;
+        this.nextShapeId = 1;
     }
 
     World.prototype.addBody = function (def) {
         var b = new Body(def);
+        for (var k = 0; k < b.shapes.length; k++) b.shapes[k].id = this.nextShapeId++;
         b.index = this.bodies.length;
         this.bodies.push(b);
         this.order.push(b.index);
         return b;
     };
 
-    function collide(A, B) {
-        var sA = A.shape, sB = B.shape;
-        if (sA.type === CIRCLE && sB.type === CIRCLE) return collideCircles(sA, A.xf, sB, B.xf);
-        if (sA.type === POLYGON && sB.type === CIRCLE) return collidePolygonAndCircle(sA, A.xf, sB, B.xf);
-        return collidePolygons(sA, A.xf, sB, B.xf);
+    function collide(sA, xfA, sB, xfB) {
+        if (sA.type === CIRCLE && sB.type === CIRCLE) return collideCircles(sA, xfA, sB, xfB);
+        if (sA.type === POLYGON && sB.type === CIRCLE) return collidePolygonAndCircle(sA, xfA, sB, xfB);
+        return collidePolygons(sA, xfA, sB, xfB);
+    }
+
+    function boxesOverlap(p, q) {
+        return p.minX <= q.maxX && q.minX <= p.maxX && p.minY <= q.maxY && q.minY <= p.maxY;
     }
 
     // Broadphase "sort and sweep" no eixo x (a ordem do passo anterior quase
     // não muda, então a ordenação por inserção é praticamente linear) + o
-    // narrowphase de cada par. Contatos que continuam existindo herdam os
-    // impulsos do passo anterior pelo id da feature (warm starting).
+    // narrowphase de cada par de PEÇAS dos dois corpos. Contatos que continuam
+    // existindo herdam os impulsos do passo anterior pelo id da feature
+    // (warm starting).
     World.prototype.updateContacts = function () {
         var bodies = this.bodies, order = this.order, i, j;
         for (i = 1; i < order.length; i++) {
@@ -409,36 +445,12 @@
                 if (b.frozen || (a.isStatic && b.isStatic)) continue;
                 if (b.aabb.minY > a.aabb.maxY || b.aabb.maxY < a.aabb.minY) continue;
 
-                // Polígono sempre como A no par polígono x círculo.
-                var A = a, B = b;
-                if (A.shape.type === CIRCLE && B.shape.type === POLYGON) { A = b; B = a; }
-                else if (A.shape.type === B.shape.type && A.index > B.index) { A = b; B = a; }
-                var pairKey = A.index * 65536 + B.index;
-
-                var m = collide(A, B);
-                if (m.pointCount === 0) continue;
-                var c = contacts[pairKey];
-                if (c) {
-                    for (var p = 0; p < m.pointCount; p++) {
-                        for (var q = 0; q < c.manifold.pointCount; q++) {
-                            if (c.manifold.points[q].key === m.points[p].key) {
-                                m.points[p].ni = c.manifold.points[q].ni;
-                                m.points[p].ti = c.manifold.points[q].ti;
-                                break;
-                            }
-                        }
+                for (var ia = 0; ia < a.shapes.length; ia++) {
+                    for (var ib = 0; ib < b.shapes.length; ib++) {
+                        if (!boxesOverlap(a.shapes[ia].aabb, b.shapes[ib].aabb)) continue;
+                        this.touch(a, a.shapes[ia], b, b.shapes[ib], stamp);
                     }
-                } else {
-                    c = contacts[pairKey] = {
-                        a: A, b: B,
-                        friction: Math.sqrt(A.friction * B.friction),
-                        restitution: Math.max(A.restitution, B.restitution),
-                        rolling: rollingResistance(A, B),
-                        rollingImpulse: 0
-                    };
                 }
-                c.manifold = m;
-                c.stamp = stamp;
             }
         }
         var list = [];
@@ -449,11 +461,45 @@
         return list;
     };
 
+    // Narrowphase de um par de peças (de corpos diferentes).
+    World.prototype.touch = function (a, sa, b, sb, stamp) {
+        // Polígono sempre como A no par polígono x círculo.
+        var A = a, B = b, sA = sa, sB = sb;
+        if ((sA.type === CIRCLE && sB.type === POLYGON) || (sA.type === sB.type && sA.id > sB.id)) {
+            A = b; B = a; sA = sb; sB = sa;
+        }
+        var key = sA.id * 1048576 + sB.id;
+        var m = collide(sA, A.xf, sB, B.xf);
+        if (m.pointCount === 0) return;
+        var c = this.contacts[key];
+        if (c) {
+            for (var p = 0; p < m.pointCount; p++) {
+                for (var q = 0; q < c.manifold.pointCount; q++) {
+                    if (c.manifold.points[q].key === m.points[p].key) {
+                        m.points[p].ni = c.manifold.points[q].ni;
+                        m.points[p].ti = c.manifold.points[q].ti;
+                        break;
+                    }
+                }
+            }
+        } else {
+            c = this.contacts[key] = {
+                a: A, b: B, sa: sA, sb: sB,
+                friction: Math.sqrt(A.friction * B.friction),
+                restitution: Math.max(A.restitution, B.restitution),
+                rolling: rollingResistance(sA, sB),
+                rollingImpulse: 0
+            };
+        }
+        c.manifold = m;
+        c.stamp = stamp;
+    };
+
     // Só pares com círculo: sem isso uma bola rola para sempre no chão.
-    function rollingResistance(A, B) {
+    function rollingResistance(sA, sB) {
         var r = 0;
-        if (A.shape.type === CIRCLE) r = Math.max(r, A.shape.radius);
-        if (B.shape.type === CIRCLE) r = Math.max(r, B.shape.radius);
+        if (sA.type === CIRCLE) r = Math.max(r, sA.radius);
+        if (sB.type === CIRCLE) r = Math.max(r, sB.radius);
         return ROLLING_RESISTANCE * r;
     }
 
@@ -463,7 +509,7 @@
         var vcs = [];
         for (var ci = 0; ci < list.length; ci++) {
             var c = list[ci], A = c.a, B = c.b, m = c.manifold;
-            var wm = worldManifold(m, A.xf, A.shape.radius, B.xf, B.shape.radius);
+            var wm = worldManifold(m, A.xf, c.sa.radius, B.xf, c.sb.radius);
             var mA = A.invMass, mB = B.invMass, iA = A.invI, iB = B.invI;
             var nx = wm.nx, ny = wm.ny, tx = ny, ty = -nx;
             var vc = {
@@ -632,7 +678,7 @@
         for (var ci = 0; ci < list.length; ci++) {
             var c = list[ci], A = c.a, B = c.b, m = c.manifold;
             var mA = A.invMass, mB = B.invMass, iA = A.invI, iB = B.invI;
-            var rA = A.shape.radius, rB = B.shape.radius;
+            var rA = c.sa.radius, rB = c.sb.radius;
             for (var j = 0; j < m.pointCount; j++) {
                 var xfA = makeXf(A.cx, A.cy, A.a), xfB = makeXf(B.cx, B.cy, B.a);
                 var nx, ny, px, py, sep;
@@ -864,35 +910,393 @@
         return null;
     }
 
-    // Do contorno (pt, coordenadas locais com y para baixo) para a forma de
-    // colisão em pt, ANTES do offset: { kind: "circle", cx, cy, r } ou
-    // { kind: "polygon", verts }. Linhas retas (área zero) viram um retângulo
-    // fininho — a espessura de verdade vem do traço/offset.
-    function shapeFromPaths(paths) {
-        var pts = sampleBezierPaths(paths, 8);
-        if (pts.length === 0) return null;
-        var hull = convexHull(pts);
-        var circle = detectCircle(hull);
-        if (circle) return { kind: "circle", cx: circle.cx, cy: circle.cy, r: circle.r };
+    // ----- decomposição convexa (para formas côncavas como "u", "h", "C") -----
 
-        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (var i = 0; i < pts.length; i++) {
-            minX = Math.min(minX, pts[i].x); maxX = Math.max(maxX, pts[i].x);
-            minY = Math.min(minY, pts[i].y); maxY = Math.max(maxY, pts[i].y);
+    function turn(o, a, b) { return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x); }
+
+    function dist2(a, b) { var dx = a.x - b.x, dy = a.y - b.y; return dx * dx + dy * dy; }
+
+    // Cada subcaminho amostrado separado (um "O" tem dois: fora e miolo).
+    function sampleSubpaths(paths, steps) {
+        return paths.map(function (p) {
+            return { closed: p.closed, pts: sampleBezierPaths([p], steps) };
+        });
+    }
+
+    // Douglas-Peucker: tira pontos que se desviam menos de "tol" da reta.
+    function simplifyOpen(pts, tol) {
+        if (pts.length < 3) return pts.slice();
+        var keep = [], stack = [[0, pts.length - 1]], i;
+        keep[0] = keep[pts.length - 1] = true;
+        while (stack.length) {
+            var seg = stack.pop(), a = seg[0], b = seg[1], maxD = -1, idx = -1;
+            var ax = pts[a].x, ay = pts[a].y, dx = pts[b].x - ax, dy = pts[b].y - ay;
+            var len = Math.sqrt(dx * dx + dy * dy);
+            for (i = a + 1; i < b; i++) {
+                var d = len > 1e-12 ? Math.abs((pts[i].x - ax) * dy - (pts[i].y - ay) * dx) / len : Math.sqrt(dist2(pts[i], pts[a]));
+                if (d > maxD) { maxD = d; idx = i; }
+            }
+            if (maxD > tol) {
+                keep[idx] = true;
+                stack.push([a, idx], [idx, b]);
+            }
         }
-        var size = Math.max(maxX - minX, maxY - minY);
-        if (size <= 0) return null;
-        if (hull.length < 3 || polygonArea(hull) < 1e-4 * size * size) {
-            // Segmento: retângulo orientado com 1% do comprimento de espessura.
-            var a = hull[0], b = hull[hull.length - 1];
-            var ex = b.x - a.x, ey = b.y - a.y, len = Math.sqrt(ex * ex + ey * ey) || 1;
-            var hx = -ey / len * size * 0.005, hy = ex / len * size * 0.005;
-            hull = convexHull([
+        return pts.filter(function (p, k) { return keep[k]; });
+    }
+
+    function simplifyRing(pts, tol) {
+        if (pts.length < 4) return pts.slice();
+        var far = 0, fd = -1;
+        for (var i = 1; i < pts.length; i++) {
+            var d = dist2(pts[0], pts[i]);
+            if (d > fd) { fd = d; far = i; }
+        }
+        var first = simplifyOpen(pts.slice(0, far + 1), tol);
+        var second = simplifyOpen(pts.slice(far).concat([pts[0]]), tol);
+        return first.concat(second.slice(1, -1));
+    }
+
+    // Tira pontos repetidos e colineares (atrapalham a triangulação).
+    function cleanRing(pts, eps) {
+        var out = pts.slice();
+        for (var i = 0; i < out.length && out.length > 3; i++) {
+            var a = out[(i - 1 + out.length) % out.length], b = out[i], c = out[(i + 1) % out.length];
+            var ac = Math.sqrt(dist2(a, c));
+            if (dist2(a, b) < eps * eps || Math.abs(turn(a, b, c)) <= eps * ac) {
+                out.splice(i, 1);
+                i = Math.max(-1, i - 2);
+            }
+        }
+        return out;
+    }
+
+    function isConvexRing(pts, eps) {
+        for (var i = 0; i < pts.length; i++) {
+            if (turn(pts[(i - 1 + pts.length) % pts.length], pts[i], pts[(i + 1) % pts.length]) < -eps) return false;
+        }
+        return true;
+    }
+
+    function pointInPolygon(p, poly) {
+        var inside = false;
+        for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            var a = poly[i], b = poly[j];
+            if ((a.y > p.y) !== (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+        }
+        return inside;
+    }
+
+    // Quão "gordo" é um triângulo: 1 = equilátero, perto de 0 = lasca.
+    function triQuality(a, b, c) {
+        var area2 = Math.abs(turn(a, b, c));
+        var l = dist2(a, b) + dist2(b, c) + dist2(c, a);
+        return l > 0 ? 3.4641 * area2 / l : 0; // 2·√3·área / soma dos lados²
+    }
+
+    // Triangulação por "ear clipping" de um polígono simples anti-horário.
+    // A cada passo corta a orelha mais bem formada (não a primeira que
+    // aparece): menos lascas finas, que viram peças instáveis na colisão.
+    // Devolve índices dos triângulos, ou null se o polígono se cruza.
+    function triangulate(poly) {
+        var n = poly.length, idx = [], tris = [], i;
+        if (n < 3) return null;
+        for (i = 0; i < n; i++) idx.push(i);
+        while (idx.length > 3) {
+            var m = idx.length, best = -1, bestQ = -1;
+            for (var k = 0; k < m; k++) {
+                var ia = idx[(k + m - 1) % m], ib = idx[k], ic = idx[(k + 1) % m];
+                var a = poly[ia], b = poly[ib], c = poly[ic];
+                if (turn(a, b, c) <= 0) continue; // vértice côncavo: não é orelha
+                var empty = true;
+                for (var j = 0; j < m && empty; j++) {
+                    var q = poly[idx[j]];
+                    if (idx[j] === ia || idx[j] === ib || idx[j] === ic) continue;
+                    if (turn(a, b, q) >= 0 && turn(b, c, q) >= 0 && turn(c, a, q) >= 0) empty = false;
+                }
+                if (!empty) continue;
+                var qual = triQuality(a, b, c);
+                if (qual > bestQ) { bestQ = qual; best = k; }
+            }
+            if (best < 0) return null;
+            tris.push([idx[(best + m - 1) % m], idx[best], idx[(best + 1) % m]]);
+            idx.splice(best, 1);
+        }
+        tris.push([idx[0], idx[1], idx[2]]);
+        return tris;
+    }
+
+    // Junta dois polígonos (índices, anti-horários) que dividem uma aresta, se
+    // o resultado continua convexo e com até maxVerts vértices.
+    function tryMerge(A, B, poly, maxVerts, eps) {
+        if (A.length + B.length - 2 > maxVerts) return null;
+        for (var i = 0; i < A.length; i++) {
+            var a0 = A[i], a1 = A[(i + 1) % A.length];
+            for (var j = 0; j < B.length; j++) {
+                if (B[j] !== a1 || B[(j + 1) % B.length] !== a0) continue;
+                var M = [], k;
+                for (k = 0; k < A.length; k++) M.push(A[(i + 1 + k) % A.length]);          // a1 ... a0
+                for (k = 2; k < B.length; k++) M.push(B[(j + k) % B.length]);              // resto de B
+                var pts = M.map(function (ix) { return poly[ix]; });
+                return isConvexRing(pts, eps) ? M : null;
+            }
+        }
+        return null;
+    }
+
+    // Hertel-Mehlhorn: parte dos triângulos e remove diagonais (das mais longas
+    // para as mais curtas) enquanto as peças continuarem convexas. No máximo
+    // 4x o número ótimo de peças — na prática, poucas peças por letra.
+    function mergeTriangles(poly, tris, maxVerts, eps) {
+        var pieces = tris.map(function (t) { return t.slice(); });
+        var parent = pieces.map(function (x, i) { return i; });
+        function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+        var firstTri = {}, diagonals = [];
+        tris.forEach(function (t, ti) {
+            for (var e = 0; e < 3; e++) {
+                var u = t[e], v = t[(e + 1) % 3], key = Math.min(u, v) + "_" + Math.max(u, v);
+                if (firstTri[key] === undefined) firstTri[key] = ti;
+                else diagonals.push({ t1: firstTri[key], t2: ti, len: dist2(poly[u], poly[v]) });
+            }
+        });
+        diagonals.sort(function (p, q) { return q.len - p.len; });
+        diagonals.forEach(function (d) {
+            var pa = find(d.t1), pb = find(d.t2);
+            if (pa === pb) return;
+            var m = tryMerge(pieces[pa], pieces[pb], poly, maxVerts, eps);
+            if (!m) return;
+            pieces[pa] = m;
+            pieces[pb] = null;
+            parent[pb] = pa;
+        });
+        return pieces.filter(Boolean).map(function (ixs) { return ixs.map(function (ix) { return poly[ix]; }); });
+    }
+
+    // ----- Bayazit (como a poly-decomp do Matter.js) -----
+    // Para cada vértice côncavo, corta até o lado oposto do polígono — no
+    // vértice visível mais próximo dentro da "cunha" do ângulo, ou num ponto
+    // novo no meio da aresta quando não há vértice lá — e resolve as duas
+    // metades recursivamente. Curvas côncavas longas (o miolo de um "c") viram
+    // faixas, em vez do leque de lascas da triangulação.
+
+    function at(poly, i) { var n = poly.length; return poly[((i % n) + n) % n]; }
+
+    function lineIntersection(p1, p2, q1, q2) {
+        var a1 = p2.y - p1.y, b1 = p1.x - p2.x, c1 = a1 * p1.x + b1 * p1.y;
+        var a2 = q2.y - q1.y, b2 = q1.x - q2.x, c2 = a2 * q1.x + b2 * q1.y;
+        var det = a1 * b2 - a2 * b1;
+        if (Math.abs(det) < 1e-12) return { x: 0, y: 0 };
+        return { x: (b2 * c1 - b1 * c2) / det, y: (a1 * c2 - a2 * c1) / det };
+    }
+
+    function segmentsIntersect(p1, p2, q1, q2) {
+        var dx = p2.x - p1.x, dy = p2.y - p1.y, da = q2.x - q1.x, db = q2.y - q1.y;
+        var den = da * dy - db * dx;
+        if (den === 0) return false;
+        var sP = (dx * (q1.y - p1.y) + dy * (p1.x - q1.x)) / den;
+        var tP = (da * (p1.y - q1.y) + db * (q1.x - p1.x)) / -den;
+        return sP >= 0 && sP <= 1 && tP >= 0 && tP <= 1;
+    }
+
+    function canSee(poly, a, b) {
+        var n = poly.length;
+        for (var i = 0; i < n; i++) {
+            var i1 = (i + 1) % n;
+            if (i === a || i === b || i1 === a || i1 === b) continue;
+            if (segmentsIntersect(poly[a], poly[b], poly[i], poly[i1])) return false;
+        }
+        return true;
+    }
+
+    function slice(poly, from, to) { // poly[from..to-1]
+        var out = [];
+        for (var i = from; i < to; i++) out.push(poly[i]);
+        return out;
+    }
+
+    function bayazit(poly, out, level) {
+        var n = poly.length;
+        if (n < 3) return true;
+        if (level > 200) return false;
+        for (var i = 0; i < n; i++) {
+            if (!(turn(at(poly, i - 1), at(poly, i), at(poly, i + 1)) < 0)) continue; // só vértices côncavos
+            var lowerDist = Infinity, upperDist = Infinity, lowerIndex = 0, upperIndex = 0;
+            var lowerInt = { x: 0, y: 0 }, upperInt = { x: 0, y: 0 }, j, p, d;
+            for (j = 0; j < n; j++) {
+                if (turn(at(poly, i - 1), at(poly, i), at(poly, j)) > 0 && turn(at(poly, i - 1), at(poly, i), at(poly, j - 1)) <= 0) {
+                    p = lineIntersection(at(poly, i - 1), at(poly, i), at(poly, j), at(poly, j - 1));
+                    if (turn(at(poly, i + 1), at(poly, i), p) < 0) {
+                        d = dist2(poly[i], p);
+                        if (d < lowerDist) { lowerDist = d; lowerInt = p; lowerIndex = j; }
+                    }
+                }
+                if (turn(at(poly, i + 1), at(poly, i), at(poly, j + 1)) > 0 && turn(at(poly, i + 1), at(poly, i), at(poly, j)) <= 0) {
+                    p = lineIntersection(at(poly, i + 1), at(poly, i), at(poly, j), at(poly, j + 1));
+                    if (turn(at(poly, i - 1), at(poly, i), p) > 0) {
+                        d = dist2(poly[i], p);
+                        if (d < upperDist) { upperDist = d; upperInt = p; upperIndex = j; }
+                    }
+                }
+            }
+            var lower = [], upper = [];
+            if (lowerIndex === (upperIndex + 1) % n) {
+                // Nenhum vértice para ligar: ponto novo no meio do caminho.
+                p = { x: (lowerInt.x + upperInt.x) / 2, y: (lowerInt.y + upperInt.y) / 2 };
+                if (i < upperIndex) {
+                    lower = slice(poly, i, upperIndex + 1).concat([p]);
+                    upper = [p].concat(lowerIndex !== 0 ? slice(poly, lowerIndex, n) : [], slice(poly, 0, i + 1));
+                } else {
+                    lower = (i !== 0 ? slice(poly, i, n) : []).concat(slice(poly, 0, upperIndex + 1), [p]);
+                    upper = [p].concat(slice(poly, lowerIndex, i + 1));
+                }
+            } else {
+                // Liga ao vértice visível mais próximo dentro da cunha.
+                if (lowerIndex > upperIndex) upperIndex += n;
+                var closest = -1, closestDist = Infinity;
+                for (j = lowerIndex; j <= upperIndex; j++) {
+                    var jj = ((j % n) + n) % n;
+                    if (turn(at(poly, i - 1), at(poly, i), at(poly, j)) >= 0 && turn(at(poly, i + 1), at(poly, i), at(poly, j)) <= 0) {
+                        d = dist2(poly[i], at(poly, j));
+                        if (d < closestDist && jj !== i && canSee(poly, i, jj)) { closestDist = d; closest = jj; }
+                    }
+                }
+                if (closest < 0) return false;
+                if (i < closest) {
+                    lower = slice(poly, i, closest + 1);
+                    upper = (closest !== 0 ? slice(poly, closest, n) : []).concat(slice(poly, 0, i + 1));
+                } else {
+                    lower = (i !== 0 ? slice(poly, i, n) : []).concat(slice(poly, 0, closest + 1));
+                    upper = slice(poly, closest, i + 1);
+                }
+            }
+            if (lower.length >= n || upper.length >= n) return false; // não progrediu
+            var first = lower.length < upper.length ? lower : upper, second = first === lower ? upper : lower;
+            return bayazit(first, out, level + 1) && bayazit(second, out, level + 1);
+        }
+        out.push(poly);
+        return true;
+    }
+
+    // Peças válidas = todas convexas e somando a área do contorno.
+    function validPieces(pieces, ring, flat) {
+        if (!pieces || !pieces.length) return false;
+        var sum = 0;
+        for (var i = 0; i < pieces.length; i++) {
+            if (pieces[i].length < 3 || !isConvexRing(pieces[i], flat)) return false;
+            sum += polygonArea(pieces[i]);
+        }
+        var area = polygonArea(ring);
+        return Math.abs(sum - area) <= 0.005 * area;
+    }
+
+    // Um contorno fechado (qualquer sentido, côncavo ou não) -> peças convexas.
+    function decomposeRing(ring, size) {
+        var eps = size * 1e-4;          // distância (pt) abaixo da qual pontos são "o mesmo"
+        var flat = size * size * 1e-7;  // tolerância de convexidade (área)
+        if (polygonArea(ring) < 0) ring = ring.slice().reverse();
+        ring = cleanRing(ring, eps);
+        if (ring.length < 3 || polygonArea(ring) <= eps * eps) return [];
+        if (isConvexRing(ring, flat)) return [simplifyHull(ring, 24, size * 0.002)];
+        var pieces = [];
+        if (bayazit(ring, pieces, 0)) {
+            pieces = pieces.map(function (pt) { return cleanRing(pt, eps); }).filter(function (pt) { return pt.length >= 3; });
+            if (validPieces(pieces, ring, flat)) {
+                return pieces.map(function (pt) { return pt.length > 24 ? simplifyHull(pt, 24, size * 0.002) : pt; });
+            }
+        }
+        // Plano B: triangulação + junção de triângulos (Hertel-Mehlhorn).
+        var tris = triangulate(ring);
+        if (!tris) return [convexHull(ring)]; // contorno que se cruza: fica a casca
+        return mergeTriangles(ring, tris, 16, flat);
+    }
+
+    // Caminho aberto (traço solto) -> um retângulo fino por segmento; a
+    // espessura de verdade vem do traço/offset (raio da forma).
+    function segmentParts(pts, size) {
+        var parts = [], h = size * 0.005;
+        for (var i = 0; i + 1 < pts.length; i++) {
+            var a = pts[i], b = pts[i + 1];
+            var ex = b.x - a.x, ey = b.y - a.y, len = Math.sqrt(ex * ex + ey * ey);
+            if (len < 1e-9) continue;
+            var hx = -ey / len * h, hy = ex / len * h;
+            parts.push(convexHull([
                 { x: a.x + hx, y: a.y + hy }, { x: b.x + hx, y: b.y + hy },
                 { x: b.x - hx, y: b.y - hy }, { x: a.x - hx, y: a.y - hy }
-            ]);
+            ]));
         }
-        return { kind: "polygon", verts: simplifyHull(hull, 24, size * 0.002) };
+        return parts;
+    }
+
+    var MAX_PARTS = 40;
+
+    // Do contorno (pt, coordenadas locais com y para baixo) para a forma de
+    // colisão em pt, ANTES do offset:
+    //   { kind: "circle", cx, cy, r }            — bolas rolam de verdade
+    //   { kind: "parts", parts: [[{x,y}...]...] } — peças convexas de um corpo só
+    // Miolos fechados (o de "O", "A", "B"...) não entram: nada consegue entrar
+    // neles. Reentrâncias abertas ("u", "h", "C") ficam abertas.
+    function shapeFromPaths(paths) {
+        var subs = sampleSubpaths(paths, 8).filter(function (sp) { return sp.pts.length > 0; });
+        if (!subs.length) return null;
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, all = [];
+        subs.forEach(function (sp) {
+            sp.pts.forEach(function (q) {
+                all.push(q);
+                if (q.x < minX) minX = q.x;
+                if (q.x > maxX) maxX = q.x;
+                if (q.y < minY) minY = q.y;
+                if (q.y > maxY) maxY = q.y;
+            });
+        });
+        var size = Math.max(maxX - minX, maxY - minY);
+        if (!(size > 0)) return null;
+
+        var rings = [], opens = [];
+        subs.forEach(function (sp) {
+            if (sp.closed && sp.pts.length >= 3 && Math.abs(polygonArea(sp.pts)) > 1e-5 * size * size) rings.push(sp.pts);
+            else opens.push(sp.pts);
+        });
+        // Furo = contorno dentro de um número ímpar de contornos maiores.
+        var areas = rings.map(function (r) { return Math.abs(polygonArea(r)); });
+        var outers = rings.filter(function (r, i) {
+            var depth = 0;
+            for (var j = 0; j < rings.length; j++) {
+                if (j !== i && areas[j] > areas[i] && pointInPolygon(r[0], rings[j])) depth++;
+            }
+            return depth % 2 === 0;
+        });
+
+        if (outers.length === 1 && opens.length === 0) {
+            var hull = convexHull(outers[0]);
+            if (Math.abs(polygonArea(outers[0])) > 0.97 * polygonArea(hull)) {
+                var circle = detectCircle(hull);
+                if (circle) return { kind: "circle", cx: circle.cx, cy: circle.cy, r: circle.r };
+            }
+        }
+
+        // Simplificação: desvio de até 1% do tamanho (≈1 pt numa letra de
+        // 90 pt). Menos vértices nas curvas = menos peças e menos lascas.
+        var tol = size * 0.01, parts = [];
+        for (var attempt = 0; attempt < 5; attempt++, tol *= 2) {
+            parts = [];
+            outers.forEach(function (r) { parts.push.apply(parts, decomposeRing(simplifyRing(r, tol), size)); });
+            opens.forEach(function (o) { parts.push.apply(parts, segmentParts(simplifyOpen(o, tol), size)); });
+            parts = parts.filter(function (pt) { return pt.length >= 3 && polygonArea(pt) > 1e-6 * size * size; });
+            if (parts.length <= MAX_PARTS) break;
+        }
+        if (!parts.length || parts.length > MAX_PARTS) {
+            // Último recurso: a casca convexa de tudo (como na versão 1.0.0).
+            var h = convexHull(all);
+            parts = h.length >= 3 && polygonArea(h) > 1e-6 * size * size ? [simplifyHull(h, 24, size * 0.002)] : segmentParts([all[0], all[all.length - 1]], size);
+        }
+        return { kind: "parts", parts: parts };
+    }
+
+    // Área total de uma forma (pt²), para massa e escala.
+    function shapeArea(sh) {
+        if (sh.kind === "circle") return Math.PI * sh.r * sh.r;
+        var a = 0;
+        sh.parts.forEach(function (pt) { a += Math.abs(polygonArea(pt)); });
+        return a;
     }
 
     // ===== Simulação completa (o que o painel chama) =====
@@ -915,8 +1319,16 @@
     var STEP_HZ = 200;
     var RECORD_HZ = 100;
     var AIR_MAX = 6;       // 1/s — com 100% de ar e peso 1, a terminal é g/6
-    var REST_SPEED = 0.05; // unidades/s
-    var REST_TIME = 0.5;   // s parado para considerar "assentado"
+    // "Assentado" = em REST_TIME segundos, nenhum objeto andou mais que
+    // REST_DIST (unidades, ~2% de um objeto típico) nem girou mais que
+    // REST_ANGLE, e ninguém está rápido agora. Medir deslocamento (e não só
+    // velocidade) deixa terminar pilhas que escorregam imperceptivelmente
+    // — letras encaixadas umas nas outras, por exemplo — em vez de correr
+    // até o tempo máximo por causa de frações de ponto por segundo.
+    var REST_TIME = 0.5;    // s
+    var REST_DIST = 0.02;   // unidades
+    var REST_ANGLE = 0.01;  // rad (~0,6°)
+    var REST_SPEED = 0.5;   // unidades/s
 
     function Simulation(scene, params) {
         var items = scene.items, n = items.length, i;
@@ -928,9 +1340,7 @@
         // Escala interna: tamanho típico de um objeto = 1 unidade.
         var areas = [], sumArea = 0;
         for (i = 0; i < n; i++) {
-            var sh = items[i].shape;
-            var ar = sh.kind === "circle" ? Math.PI * sh.r * sh.r : Math.abs(polygonArea(sh.verts));
-            areas.push(Math.max(ar, 1e-6));
+            areas.push(Math.max(shapeArea(items[i].shape), 1e-6));
             sumArea += areas[i];
         }
         var aRef = n > 0 ? sumArea / n : 1;
@@ -956,34 +1366,40 @@
             var mass = weight * relArea;
             var size = Math.sqrt(relArea);
             var offset = (it.offset || 0) / S;
-            var shape, cx, cy, inertia, outline;
+            var shapes, cx, cy, inertia, outline;
             if (s.kind === "circle") {
                 var r = s.r / S;
                 var rc = Math.max(r + offset, 0.1 * r);
-                shape = makeCircle(rc);
+                shapes = [makeCircle(rc)];
                 cx = s.cx / S; cy = s.cy / S;
                 inertia = 0.5 * mass * r * r;
                 outline = { kind: "circle", radius: rc * S };
             } else {
-                var vs = [];
-                for (var k = 0; k < s.verts.length; k++) vs.push({ x: s.verts[k].x / S, y: s.verts[k].y / S });
-                var md = polygonMassData(vs);
-                cx = md.cx; cy = md.cy;
-                inertia = mass * md.I / md.area;
-                var core = vs, radius = POLYGON_RADIUS;
-                if (offset < 0) core = insetConvex(vs, -offset).verts;
-                else radius += offset;
-                var local = [], localPt = [];
-                for (k = 0; k < core.length; k++) {
-                    local.push({ x: core[k].x - cx, y: core[k].y - cy });
-                    localPt.push({ x: (core[k].x - cx) * S, y: (core[k].y - cy) * S });
+                // Centro de massa e inércia do conjunto de peças (eixos paralelos).
+                var parts = s.parts.map(function (pt) { return pt.map(function (v) { return { x: v.x / S, y: v.y / S }; }); });
+                var mds = parts.map(polygonMassData);
+                var At = 0, mx = 0, my = 0, k;
+                for (k = 0; k < mds.length; k++) { At += mds[k].area; mx += mds[k].area * mds[k].cx; my += mds[k].area * mds[k].cy; }
+                cx = mx / At; cy = my / At;
+                var Iu = 0;
+                for (k = 0; k < mds.length; k++) {
+                    Iu += mds[k].I + mds[k].area * ((mds[k].cx - cx) * (mds[k].cx - cx) + (mds[k].cy - cy) * (mds[k].cy - cy));
                 }
-                shape = makePolygon(local, radius);
-                outline = { kind: "polygon", verts: localPt, radius: radius * S };
+                inertia = mass * Iu / At;
+                var radius = POLYGON_RADIUS + Math.max(offset, 0);
+                shapes = [];
+                var outlineParts = [];
+                parts.forEach(function (pv) {
+                    var core = offset < 0 ? insetConvex(pv, -offset).verts : pv;
+                    var local = core.map(function (v) { return { x: v.x - cx, y: v.y - cy }; });
+                    shapes.push(makePolygon(local, radius));
+                    outlineParts.push(local.map(function (v) { return { x: v.x * S, y: v.y * S }; }));
+                });
+                outline = { kind: "poly", parts: outlineParts, radius: radius * S };
             }
             var damp = air * size / mass; // = k·L/m
             this.world.addBody({
-                shape: shape, x: cx, y: cy, mass: mass, inertia: inertia,
+                shapes: shapes, x: cx, y: cy, mass: mass, inertia: inertia,
                 restitution: Math.max(0, Math.min(1, it.restitution || 0)),
                 friction: friction,
                 linearDamping: damp,
@@ -1019,7 +1435,6 @@
         this.stepsPerFrame = STEP_HZ / RECORD_HZ;
         this.stepCount = 0;
         this.maxSteps = Math.round(this.maxSeconds * STEP_HZ);
-        this.restTimer = 0;
         this.settled = false;
         this.done = n === 0;
         this.frames = [];
@@ -1054,16 +1469,14 @@
                     continue;
                 }
                 active++;
-                var reach = b.shape.type === CIRCLE ? b.shape.radius : boundingRadius(b.shape);
-                var sp = Math.sqrt(b.vx * b.vx + b.vy * b.vy) + Math.abs(b.w) * reach;
+                var sp = Math.sqrt(b.vx * b.vx + b.vy * b.vy) + Math.abs(b.w) * b.reach();
                 if (sp > fastest) fastest = sp;
             }
-            if (this.stepCount % this.stepsPerFrame === 0) this.record();
+            var recorded = this.stepCount % this.stepsPerFrame === 0;
+            if (recorded) this.record();
 
             if (active === 0) { this.done = true; this.settled = true; break; }
-            if (fastest < REST_SPEED) this.restTimer += dt;
-            else this.restTimer = 0;
-            if (this.restTimer >= REST_TIME && this.stepCount * dt > 0.2) {
+            if (recorded && fastest < REST_SPEED && this.isResting()) {
                 this.done = true; this.settled = true;
             } else if (this.stepCount >= this.maxSteps) {
                 this.done = true;
@@ -1073,13 +1486,17 @@
         return this.done;
     };
 
-    function boundingRadius(shape) {
-        if (shape.br !== undefined) return shape.br;
-        var r = 0;
-        for (var i = 0; i < shape.count; i++) r = Math.max(r, Math.sqrt(shape.v[i].x * shape.v[i].x + shape.v[i].y * shape.v[i].y));
-        shape.br = r + shape.radius;
-        return shape.br;
-    }
+    Simulation.prototype.isResting = function () {
+        var back = Math.round(REST_TIME * RECORD_HZ), k = this.frames.length - 1;
+        if (k < back) return false;
+        var now = this.frames[k], then = this.frames[k - back], tol = REST_DIST * this.S;
+        for (var i = 0; i < this.n; i++) {
+            if (this.out[i]) continue;
+            var dx = now[i * 3] - then[i * 3], dy = now[i * 3 + 1] - then[i * 3 + 1];
+            if (dx * dx + dy * dy > tol * tol || Math.abs(now[i * 3 + 2] - then[i * 3 + 2]) > REST_ANGLE) return false;
+        }
+        return true;
+    };
 
     Simulation.prototype.progress = function () {
         return Math.min(1, this.stepCount / this.maxSteps);
@@ -1115,7 +1532,9 @@
             collideCircles: collideCircles, makeXf: makeXf,
             convexHull: convexHull, polygonArea: polygonArea, polygonMassData: polygonMassData,
             sampleBezierPaths: sampleBezierPaths, insetConvex: insetConvex, detectCircle: detectCircle,
-            simplifyHull: simplifyHull
+            simplifyHull: simplifyHull, sampleSubpaths: sampleSubpaths, triangulate: triangulate,
+            decomposeRing: decomposeRing, pointInPolygon: pointInPolygon, shapeArea: shapeArea,
+            bayazit: bayazit, validPieces: validPieces
         }
     };
 

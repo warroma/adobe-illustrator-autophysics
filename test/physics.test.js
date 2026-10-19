@@ -39,11 +39,20 @@ function item(paths, opts) {
     };
 }
 
-// Polígono (pt) do corpo i no quadro f, já com rotação/translação.
-function worldPoly(res, i, f) {
+// Peças (pt) do corpo i no quadro f, já com rotação/translação.
+function worldParts(res, i, f) {
     var fr = res.frames[f], x = fr[i * 3], y = fr[i * 3 + 1], a = fr[i * 3 + 2];
     var c = Math.cos(a), s = Math.sin(a), o = res.bodies[i].outline;
-    return o.verts.map(function (v) { return { x: c * v.x - s * v.y + x, y: s * v.x + c * v.y + y }; });
+    return o.parts.map(function (part) {
+        return part.map(function (v) { return { x: c * v.x - s * v.y + x, y: s * v.x + c * v.y + y }; });
+    });
+}
+function allPoints(parts) { return [].concat.apply([], parts); }
+// Maior penetração entre duas peças quaisquer de dois corpos.
+function bodyPenetration(P, Q) {
+    var worst = -Infinity;
+    P.forEach(function (a) { Q.forEach(function (b) { worst = Math.max(worst, penetration(a, b)); }); });
+    return worst;
 }
 
 // Penetração (pt) entre dois polígonos convexos pelo SAT; <= 0 = separados.
@@ -65,8 +74,20 @@ function penetration(A, B) {
 
 function last(res) { return res.frames.length - 1; }
 
-function bottomOf(poly) { return Math.max.apply(null, poly.map(function (v) { return v.y; })); }
-function topOf(poly) { return Math.min.apply(null, poly.map(function (v) { return v.y; })); }
+function bottomOf(parts) { return Math.max.apply(null, allPoints(parts).map(function (v) { return v.y; })); }
+function topOf(parts) { return Math.min.apply(null, allPoints(parts).map(function (v) { return v.y; })); }
+function polyPaths(points, closed) {
+    var pts = [];
+    points.forEach(function (p) { pts.push(p[0], p[1], p[0], p[1], p[0], p[1]); });
+    return { closed: closed !== false, pts: pts };
+}
+function isConvex(poly) {
+    for (var i = 0; i < poly.length; i++) {
+        var a = poly[i], b = poly[(i + 1) % poly.length], c = poly[(i + 2) % poly.length];
+        if ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) < -1e-6) return false;
+    }
+    return true;
+}
 
 var WALLS = { floor: true, left: true, right: true, ceiling: false };
 
@@ -83,22 +104,23 @@ var WALLS = { floor: true, left: true, right: true, ceiling: false };
     assert.ok(Math.abs(circ.r - 20) < 0.1, "raio do círculo: " + circ.r);
 
     var rect = P.shapeFromPaths(rectPaths(0, 0, 40, 20));
-    assert.strictEqual(rect.kind, "polygon");
-    assert.strictEqual(rect.verts.length, 4);
-    assert.ok(Math.abs(I.polygonArea(rect.verts) - 800) < 1e-6);
+    assert.strictEqual(rect.kind, "parts");
+    assert.strictEqual(rect.parts.length, 1, "retângulo é uma peça só");
+    assert.strictEqual(rect.parts[0].length, 4);
+    assert.ok(Math.abs(I.polygonArea(rect.parts[0]) - 800) < 1e-6);
 
-    var md = I.polygonMassData(rect.verts);
+    var md = I.polygonMassData(rect.parts[0]);
     assert.ok(Math.abs(md.cx - 20) < 1e-9 && Math.abs(md.cy - 10) < 1e-9, "centroide do retângulo");
     // Inércia de retângulo (densidade 1): A·(w²+h²)/12
     assert.ok(Math.abs(md.I - 800 * (1600 + 400) / 12) < 1e-6, "inércia do retângulo: " + md.I);
 
-    var inset = I.insetConvex(rect.verts, 5);
+    var inset = I.insetConvex(rect.parts[0], 5);
     assert.ok(Math.abs(I.polygonArea(inset.verts) - 30 * 10) < 1e-6, "inset de 5 num 40x20 vira 30x10");
 
     // Linha reta (área zero) ainda vira uma forma com área.
     var line = P.shapeFromPaths([{ closed: false, pts: [0, 0, 0, 0, 0, 0, 100, 0, 100, 0, 100, 0] }]);
-    assert.strictEqual(line.kind, "polygon");
-    assert.ok(I.polygonArea(line.verts) > 0, "linha vira retângulo fino");
+    assert.strictEqual(line.kind, "parts");
+    assert.ok(I.polygonArea(line.parts[0]) > 0, "linha vira retângulo fino");
 
     // Elipse (não círculo) vira polígono com no máximo 24 vértices.
     var ell = P.shapeFromPaths([{ closed: true, pts: (function () {
@@ -109,9 +131,59 @@ var WALLS = { floor: true, left: true, right: true, ceiling: false };
         });
         return pts;
     })() }]);
-    assert.strictEqual(ell.kind, "polygon", "elipse não é círculo");
-    assert.ok(ell.verts.length <= 24 && ell.verts.length >= 12, "elipse simplificada: " + ell.verts.length);
+    assert.strictEqual(ell.kind, "parts", "elipse não é círculo");
+    assert.strictEqual(ell.parts.length, 1, "elipse é convexa: uma peça");
+    assert.ok(ell.parts[0].length <= 24 && ell.parts[0].length >= 12, "elipse simplificada: " + ell.parts[0].length);
     console.log("geometria: OK");
+
+    // "U" (côncavo): várias peças convexas que somam a área do U — a concha fica aberta.
+    var U = [[0, 0], [20, 0], [20, 60], [60, 60], [60, 0], [80, 0], [80, 80], [0, 80]];
+    var u = P.shapeFromPaths([polyPaths(U)]);
+    assert.strictEqual(u.kind, "parts");
+    assert.ok(u.parts.length >= 2, "U vira mais de uma peça: " + u.parts.length);
+    u.parts.forEach(function (pt) { assert.ok(isConvex(pt), "toda peça é convexa"); });
+    var uArea = I.shapeArea(u);
+    assert.ok(Math.abs(uArea - (80 * 80 - 40 * 60)) < 1, "área do U preservada: " + uArea);
+    assert.ok(!u.parts.some(function (pt) { return I.pointInPolygon({ x: 40, y: 30 }, pt); }), "a concha do U fica vazia");
+
+    // "O" quadrado: o miolo fechado não vira peça (nada entra nele) — fica o contorno de fora.
+    var O = P.shapeFromPaths([polyPaths([[0, 0], [60, 0], [60, 80], [0, 80]]), polyPaths([[15, 15], [15, 65], [45, 65], [45, 15]])]);
+    assert.strictEqual(O.parts.length, 1, "O vira uma peça (o de fora)");
+    assert.ok(Math.abs(I.shapeArea(O) - 60 * 80) < 1e-6, "miolo do O ignorado na colisão");
+
+    // Anel redondo (círculo com miolo) continua rolando como círculo.
+    var ring = P.shapeFromPaths(circlePaths(50, 50, 30).concat(circlePaths(50, 50, 18)));
+    assert.strictEqual(ring.kind, "circle", "anel = círculo");
+
+    // Contorno com muitos pontos (uma letra "S" de curvas) não explode em peças.
+    var spiral = [];
+    for (var t = 0; t <= Math.PI * 3; t += 0.05) spiral.push([100 + Math.cos(t) * (20 + 10 * t), 100 + Math.sin(t) * (20 + 10 * t)]);
+    for (t = Math.PI * 3; t >= 0; t -= 0.05) spiral.push([100 + Math.cos(t) * (12 + 10 * t), 100 + Math.sin(t) * (12 + 10 * t)]);
+    var sp = P.shapeFromPaths([polyPaths(spiral)]);
+    assert.ok(sp.parts.length >= 3 && sp.parts.length <= 40, "espiral decomposta em " + sp.parts.length + " peças");
+    sp.parts.forEach(function (pt) { assert.ok(isConvex(pt), "peça da espiral convexa"); });
+    console.log("decomposição convexa: OK (U em " + u.parts.length + " peças, espiral em " + sp.parts.length + ")");
+
+    // Propriedade: para 300 polígonos simples aleatórios (estrelas irregulares,
+    // bem côncavas), toda peça é convexa e a soma das áreas é a do polígono.
+    var seed = 12345;
+    function rnd() { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }
+    var maxParts = 0, fallbacks = 0;
+    for (var trial = 0; trial < 300; trial++) {
+        var n = 5 + Math.floor(rnd() * 40), pts = [], base = rnd() * 6;
+        for (var k = 0; k < n; k++) {
+            var ang = base + 2 * Math.PI * (k + 0.2 + rnd() * 0.6) / n, rad = 20 + rnd() * 80;
+            pts.push({ x: 150 + rad * Math.cos(ang), y: 150 + rad * Math.sin(ang) });
+        }
+        var pieces = I.decomposeRing(pts, 200);
+        var sum = 0;
+        pieces.forEach(function (pc) { assert.ok(isConvex(pc), "peça convexa (tentativa " + trial + ")"); sum += I.polygonArea(pc); });
+        var ar = Math.abs(I.polygonArea(pts));
+        if (Math.abs(sum - ar) > 0.005 * ar) fallbacks++;
+        maxParts = Math.max(maxParts, pieces.length);
+    }
+    assert.strictEqual(fallbacks, 0, "toda decomposição cobre o polígono inteiro");
+    console.log("decomposição em 300 polígonos aleatórios: OK (até " + maxParts + " peças)");
 })();
 
 // ---- colisão: manifold de caixa sobre caixa ----
@@ -138,13 +210,13 @@ var WALLS = { floor: true, left: true, right: true, ceiling: false };
     assert.ok(res.settled, "pilha assenta antes do tempo máximo (durou " + res.duration + " s)");
     var f = last(res), worst = 0;
     for (var i = 0; i < items.length; i++) {
-        var A = worldPoly(res, i, f);
+        var A = worldParts(res, i, f);
         assert.ok(bottomOf(A) <= 400.5, "caixa " + i + " não afunda no chão: " + bottomOf(A));
-        for (var j = i + 1; j < items.length; j++) worst = Math.max(worst, penetration(A, worldPoly(res, j, f)));
+        for (var j = i + 1; j < items.length; j++) worst = Math.max(worst, bodyPenetration(A, worldParts(res, j, f)));
     }
     assert.ok(worst < 0.5, "penetração máxima entre caixas < 0,5 pt (foi " + worst.toFixed(3) + ")");
     // As 6 caixas de 50 pt empilhadas: o topo da pilha fica a ~300 pt do chão.
-    var tops = items.map(function (_, i) { return topOf(worldPoly(res, i, f)); });
+    var tops = items.map(function (_, i) { return topOf(worldParts(res, i, f)); });
     var highest = Math.min.apply(null, tops);
     assert.ok(Math.abs(highest - 100) < 3, "pilha de 6 x 50 pt fica em pé (topo em y=" + highest.toFixed(2) + ")");
     console.log("pilha de caixas: OK (assentou em " + res.duration.toFixed(2) + " s, penetração " + worst.toFixed(3) + " pt)");
@@ -245,14 +317,52 @@ var WALLS = { floor: true, left: true, right: true, ceiling: false };
     }
     var worst = 0;
     for (i = 0; i < items.length; i++) {
-        if (res.bodies[i].outline.kind !== "polygon") continue;
+        if (res.bodies[i].outline.kind !== "poly") continue;
         for (var j = i + 1; j < items.length; j++) {
-            if (res.bodies[j].outline.kind !== "polygon") continue;
-            worst = Math.max(worst, penetration(worldPoly(res, i, f), worldPoly(res, j, f)));
+            if (res.bodies[j].outline.kind !== "poly") continue;
+            worst = Math.max(worst, bodyPenetration(worldParts(res, i, f), worldParts(res, j, f)));
         }
     }
     assert.ok(worst < 1.5, "penetração máxima no monte < 1,5 pt (foi " + worst.toFixed(3) + ")");
     console.log("monte de 40 formas: OK (" + res.duration.toFixed(2) + " s simulados em " + ms + " ms, assentou: " + res.settled + ", penetração " + worst.toFixed(3) + " pt)");
+})();
+
+// ---- forma côncava: uma bola cai DENTRO da concha de um "U" ----
+
+(function () {
+    // U de 120 x 90 apoiado no chão (y para baixo), com a abertura para cima.
+    var U = [[140, 310], [160, 310], [160, 380], [240, 380], [240, 310], [260, 310], [260, 400], [140, 400]];
+    var res = P.simulate({
+        width: 400, height: 400, items: [
+            item([polyPaths(U)], { weight: 20 }),
+            item(circlePaths(200, 150, 15), { restitution: 0.1 })
+        ]
+    }, { gravity: 1, air: 0, friction: 0.6, maxSeconds: 8, walls: WALLS });
+    var f = last(res), fr = res.frames[f];
+    var bx = fr[3], by = fr[4];
+    assert.ok(bx > 160 && bx < 240, "a bola termina entre os braços do U (x=" + bx.toFixed(1) + ")");
+    assert.ok(by > 330, "e no fundo da concha, abaixo do topo dos braços (y=" + by.toFixed(1) + ")");
+    assert.ok(Math.abs(by - (380 - 15)) < 1.5, "apoiada no fundo da concha (y=" + by.toFixed(1) + ")");
+    console.log("bola dentro do U: OK (parou em " + bx.toFixed(1) + ", " + by.toFixed(1) + ")");
+})();
+
+// ---- letras côncavas empilhadas não se atravessam ----
+
+(function () {
+    var h = [[0, 0], [12, 0], [12, 30], [36, 30], [36, 60], [24, 60], [24, 42], [12, 42], [12, 60], [0, 60]];
+    var items = [];
+    for (var k = 0; k < 8; k++) {
+        var ox = 60 + (k % 4) * 70, oy = 40 + Math.floor(k / 4) * 120 - k * 7;
+        items.push(item([polyPaths(h.map(function (p) { return [p[0] + ox, p[1] + oy]; }))], { restitution: 0.2 }));
+    }
+    var res = P.simulate({ width: 400, height: 400, items: items }, { gravity: 1, air: 0.1, friction: 0.5, maxSeconds: 8, walls: WALLS });
+    var f = last(res), worst = 0;
+    for (var i = 0; i < items.length; i++) {
+        for (var j = i + 1; j < items.length; j++) worst = Math.max(worst, bodyPenetration(worldParts(res, i, f), worldParts(res, j, f)));
+        assert.ok(bottomOf(worldParts(res, i, f)) <= 400.5, "letra " + i + " acima do chão");
+    }
+    assert.ok(worst < 1.5, "letras côncavas não se atravessam (penetração " + worst.toFixed(3) + " pt)");
+    console.log("letras côncavas: OK (" + res.duration.toFixed(2) + " s, penetração " + worst.toFixed(3) + " pt)");
 })();
 
 // ---- sem chão: objetos saem e a simulação termina ----

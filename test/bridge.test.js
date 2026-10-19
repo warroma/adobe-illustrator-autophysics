@@ -54,7 +54,13 @@ Object.defineProperty(FakePath.prototype, "pathPoints", {
     }
 });
 Object.defineProperty(FakePath.prototype, "geometricBounds", { get: function () { return boundsOf(this.pts); } });
-Object.defineProperty(FakePath.prototype, "visibleBounds", { get: function () { return boundsOf(this.pts); } });
+// "extra" simula um efeito (3D, sombra) que deixa a aparência maior que o desenho.
+Object.defineProperty(FakePath.prototype, "visibleBounds", {
+    get: function () {
+        var b = boundsOf(this.pts), e = this.extra;
+        return e ? [b[0] - e[0], b[1] + e[1], b[2] + e[2], b[3] - e[3]] : b;
+    }
+});
 FakePath.prototype.setEntirePath = function (pts) { this.pts = pts.map(function (p) { return p.slice(); }); };
 FakePath.prototype.rotate = function (deg, a, b, c, d, about) {
     assert.strictEqual(about, "DOCUMENTORIGIN", "o host gira sempre em torno da origem do documento");
@@ -121,7 +127,7 @@ assert.strictEqual(built.scene.items.length, 4, "nenhum objeto descartado");
 assert.strictEqual(built.scene.width, 600);
 assert.strictEqual(built.scene.height, 800);
 // Caixa A: y do documento 40..120 com topo da prancheta em 800 -> local 680..760.
-var va = built.scene.items[0].shape.verts;
+var va = built.scene.items[0].shape.parts[0];
 var ys = va.map(function (v) { return v.y; });
 assert.ok(Math.abs(Math.min.apply(null, ys) - 680) < 1e-9 && Math.abs(Math.max.apply(null, ys) - 760) < 1e-9, "y convertido para baixo");
 assert.strictEqual(built.scene.items[2].restitution, 0.6, "props do painel valem por cima da Tag");
@@ -169,7 +175,7 @@ console.log("aplicar estado final: OK (erro máximo " + worst.toExponential(2) +
 // Tag gravada junto com o movimento.
 assert.strictEqual(tri.tags.length, 1);
 assert.strictEqual(tri.tags[0].name, "AutoPhysics");
-assert.deepStrictEqual(B.parseProps(tri.tags[0].value), { e: 0.6, w: 2, o: 0 });
+assert.deepStrictEqual(B.parseProps(tri.tags[0].value), { e: 0.6, w: 2, o: 0, a: -1 });
 console.log("tags: OK (" + tri.tags[0].value + ")");
 
 // ---- detecção de pose (para o GIF) ----
@@ -197,8 +203,85 @@ console.log("cronograma do GIF: OK");
 
 // ---- props ----
 
-assert.deepStrictEqual(B.parseProps(""), { e: 0.3, w: 1, o: 0 });
-assert.deepStrictEqual(B.parseProps("e=0.9;w=20;o=-3"), { e: 0.9, w: 10, o: -3 });
-assert.strictEqual(B.formatProps({ e: 0.5, w: 1.25, o: -2 }), "e=0.5;w=1.25;o=-2");
+assert.deepStrictEqual(B.parseProps(""), { e: 0.3, w: 1, o: 0, a: -1 });
+assert.deepStrictEqual(B.parseProps("e=0.9;w=20;o=-3;a=1"), { e: 0.9, w: 10, o: -3, a: 1 });
+assert.strictEqual(B.formatProps({ e: 0.5, w: 1.25, o: -2, a: -1 }), "e=0.5;w=1.25;o=-2");
+assert.strictEqual(B.formatProps({ e: 0.5, w: 1.25, o: -2, a: 0 }), "e=0.5;w=1.25;o=-2;a=0");
+
+// ---- texto em contornos com efeito: grupo cujo "clipped" dá erro PARM ----
+//
+// Caso real (v1.0.0): "an Illustrator error occurred: 1346458189 ('PARM')"
+// ao ler GroupItem.clipped de letras convertidas em contornos e extrudadas.
+// A captura tem que seguir: o grupo é lido pelos filhos, e o "O" (caminho
+// composto) entra só pelo contorno de fora.
+
+function FakeContainer(typename, children) {
+    this.typename = typename;
+    this.uuid = String(uuidSeq++);
+    this.name = "";
+    this.locked = false; this.editable = true; this.hidden = false; this.clipping = false;
+    this.parent = userLayer;
+    this.kids = children;
+    var self = this;
+    children.forEach(function (c) { c.parent = self; });
+    var tagList = [];
+    tagList.add = function () { var t = { name: "", value: "" }; tagList.push(t); return t; };
+    this.tags = tagList;
+}
+FakeContainer.prototype = {
+    get pageItems() { return this.kids; },
+    get pathItems() { return this.kids; },
+    get geometricBounds() {
+        function pts(n) { return n.kids ? [].concat.apply([], n.kids.map(pts)) : n.pts; }
+        return boundsOf(pts(this));
+    },
+    get visibleBounds() {
+        var b = this.geometricBounds, e = this.extra;
+        return e ? [b[0] - e[0], b[1] + e[1], b[2] + e[2], b[3] - e[3]] : b;
+    },
+    get clipped() { throw new Error("an Illustrator error occurred: 1346458189 ('PARM')"); }
+};
+
+(function () {
+    // "O" quadrado: contorno de fora + miolo, num caminho composto, dentro de um grupo.
+    var outer = new FakePath([[100, 700], [160, 700], [160, 620], [100, 620]], null);
+    var inner = new FakePath([[115, 685], [115, 635], [145, 635], [145, 685]], null);
+    var O = new FakeContainer("CompoundPathItem", [outer, inner]);
+    var group = new FakeContainer("GroupItem", [O]);
+    items[group.uuid] = group;
+    doc.selection = [group];
+    var cap = ctx.AutoPhysics_capture();
+    assert.ok(cap.indexOf("OK|") === 0, "captura não pode dar erro com o PARM: " + cap.slice(0, 160));
+    var d = B.parseDescription(cap);
+    assert.strictEqual(d.items.length, 1);
+    assert.strictEqual(d.items[0].paths.length, 2, "os dois subcaminhos do O foram lidos");
+    var sc = B.buildScene(d, {});
+    var sh = sc.scene.items[0].shape;
+    assert.strictEqual(sh.kind, "parts");
+    assert.strictEqual(sh.parts.length, 1, "o miolo do O não vira peça");
+    assert.ok(Math.abs(P._internal.shapeArea(sh) - 60 * 80) < 1e-6, "área = contorno de fora");
+    assert.strictEqual(sc.meta[0].art.length, 2, "a prévia desenha o O com o miolo");
+    console.log("grupo com PARM em .clipped: OK (O lido pelos filhos, miolo fora da colisão)");
+
+    // Mesma coisa com "extrusão": a aparência passa 20 pt para a direita e 12 para baixo.
+    group.extra = [0, 0, 20, 12];
+    var capText = ctx.AutoPhysics_capture();
+    d = B.parseDescription(capText);
+    assert.ok(d.items[0].effect.active, "efeito detectado: " + capText.split("\n")[1].split("|").slice(5, 7).join(" | ") + " " + JSON.stringify(d.items[0].effect));
+    assert.strictEqual(d.items[0].effect.dx, 20);
+    assert.strictEqual(d.items[0].effect.dy, 12);
+    sc = B.buildScene(d, {});
+    var swept = sc.scene.items[0].shape.parts[0];
+    var xs = swept.map(function (v) { return v.x; }), ys = swept.map(function (v) { return v.y; });
+    // Local: x 100..160 (+20), y (800-700)=100..180 (+12)
+    assert.ok(Math.abs(Math.max.apply(null, xs) - 180) < 1e-6 && Math.abs(Math.max.apply(null, ys) - 192) < 1e-6, "peça varrida até a face de trás");
+    assert.ok(Math.abs(Math.min.apply(null, xs) - 100) < 1e-6 && Math.abs(Math.min.apply(null, ys) - 100) < 1e-6, "e começa na face da frente");
+    assert.strictEqual(sc.meta[0].appearance, true);
+    var off = {};
+    off[group.uuid] = B.parseProps("a=0");
+    sc = B.buildScene(d, off);
+    assert.ok(Math.abs(P._internal.shapeArea(sc.scene.items[0].shape) - 60 * 80) < 1e-6, "com a aparência desligada, só o desenho");
+    console.log("colisão pela aparência (extrusão): OK — automática, e dá para desligar por objeto");
+})();
 
 console.log("\nbridge.test.js: todos os testes passaram");

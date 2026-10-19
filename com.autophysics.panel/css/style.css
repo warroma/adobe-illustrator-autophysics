@@ -181,6 +181,20 @@ button.link {
     overflow: hidden;
 }
 .unit-toggle.mini { width: 90px; margin-top: 6px; }
+
+.check-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: -2px 0 10px;
+    color: var(--text);
+    font-size: 11px;
+    line-height: 1.4;
+    cursor: pointer;
+}
+.check-row input { margin: 1px 0 0; accent-color: var(--accent); flex: none; }
+.check-row .hint { color: #7a7a7a; }
+.check-row .hint.on { color: #e8c766; }
 .unit-toggle button, .toggle-row button {
     flex: 1;
     background: var(--bg-alt);

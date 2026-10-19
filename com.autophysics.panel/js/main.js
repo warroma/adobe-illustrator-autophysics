@@ -32,6 +32,7 @@ var propsMemory = {};
 var els = {};
 ["objCount", "abName", "abInfo", "captureBtn", "selectAllBtn", "objList", "objControls", "objCaption",
     "elasticity", "elasticityVal", "weight", "weightVal", "offset", "offsetVal", "offsetUnit", "unitToggle",
+    "appearance", "appearanceHint",
     "gravity", "gravityVal", "gravityHint", "air", "airVal", "friction", "frictionVal", "maxSeconds", "maxSecondsVal",
     "wallToggles", "simulateBtn", "previewWrap", "preview", "playBtn", "scrub", "timeLabel", "applyBtn",
     "gifWidth", "gifFps", "gifSpeed", "gifHold", "gifBackground", "gifLoop", "gifBtn", "status"
@@ -105,8 +106,10 @@ function markStale() {
 
 // ===== lista de objetos =====
 
-function propsSummary(p) {
-    return "E " + Math.round(p.e * 100) + "% · P " + fmtBR(p.w, 2) + "× · O " + fmtBR(ptToUnit(p.o), 1);
+function propsSummary(o) {
+    var p = o.props;
+    return "E " + Math.round(p.e * 100) + "% · P " + fmtBR(p.w, 2) + "× · O " + fmtBR(ptToUnit(p.o), 1) +
+        (Bridge.useAppearance(p, o.effect) ? " · 3D" : "");
 }
 
 function renderList() {
@@ -131,7 +134,7 @@ function renderList() {
         name.textContent = displayName(o, i);
         var meta = document.createElement("span");
         meta.className = "obj-meta";
-        meta.textContent = propsSummary(o.props);
+        meta.textContent = propsSummary(o);
         row.appendChild(sw); row.appendChild(name); row.appendChild(meta);
         list.appendChild(row);
     });
@@ -161,6 +164,14 @@ function renderControls() {
     els.offset.value = p.o;
     els.offsetVal.value = fmt(ptToUnit(p.o), 2);
     els.offsetUnit.textContent = state.unit;
+    var on = sel.map(function (o) { return Bridge.useAppearance(o.props, o.effect); });
+    els.appearance.checked = on[0];
+    els.appearance.indeterminate = on.some(function (v) { return v !== on[0]; });
+    var detected = sel.some(function (o) { return o.effect && o.effect.active; });
+    els.appearanceHint.textContent = detected
+        ? "(a aparência passa do desenho — efeito 3D ou sombra detectado)"
+        : "(efeitos 3D, sombra…)";
+    els.appearanceHint.className = "hint" + (detected ? " on" : "");
 }
 
 els.objList.addEventListener("click", function (e) {
@@ -198,7 +209,7 @@ function setSelectedProp(key, value) {
     // Só o resumo das linhas muda: atualiza o texto sem recriar a lista.
     Array.prototype.forEach.call(els.objList.querySelectorAll(".obj-row"), function (row) {
         var o = state.objects[parseInt(row.getAttribute("data-index"), 10)];
-        row.querySelector(".obj-meta").textContent = propsSummary(o.props);
+        row.querySelector(".obj-meta").textContent = propsSummary(o);
     });
     markStale();
 }
@@ -234,6 +245,13 @@ els.offsetVal.addEventListener("change", function () {
     var v = parseNum(els.offsetVal.value);
     if (isNaN(v)) return;
     setSelectedProp("o", Math.max(-100, Math.min(100, unitToPt(v))));
+    renderControls();
+});
+
+// Colidir pela aparência: com efeito detectado já vem ligado ("automático");
+// marcar/desmarcar grava a escolha no objeto.
+els.appearance.addEventListener("change", function () {
+    setSelectedProp("a", els.appearance.checked ? 1 : 0);
     renderControls();
 });
 
@@ -319,7 +337,7 @@ els.captureBtn.addEventListener("click", function () {
         if (desc.error) { fail(desc.error); return; }
         state.objects = desc.items.map(function (it) {
             return {
-                uuid: it.uuid, name: it.name, typename: it.typename, color: it.color,
+                uuid: it.uuid, name: it.name, typename: it.typename, color: it.color, effect: it.effect,
                 props: propsMemory[it.uuid] || Bridge.parseProps(it.props)
             };
         });
@@ -353,7 +371,9 @@ function runSimulation() {
         var desc = Bridge.parseDescription(text);
         if (desc.error) { fail(desc.error); return; }
         var present = {};
-        desc.items.forEach(function (it) { present[it.uuid] = true; });
+        desc.items.forEach(function (it) { present[it.uuid] = it; });
+        // A aparência pode ter mudado desde a captura (efeito ligado/desligado).
+        state.objects.forEach(function (o) { if (present[o.uuid]) o.effect = present[o.uuid].effect; });
         var removed = state.objects.length - desc.items.length;
         if (removed > 0) state.objects = state.objects.filter(function (o) { return present[o.uuid]; });
 
@@ -451,40 +471,67 @@ function drawPreview(fi) {
     ctx.clip();
     // De trás para a frente (a lista vem da seleção: frente primeiro).
     for (var i = res.bodies.length - 1; i >= 0; i--) {
-        var b = res.bodies[i], col = sim.meta[i].color;
+        var b = res.bodies[i], m = sim.meta[i], col = m.color;
+        var solid = "rgba(" + col.join(",") + ",0.92)";
+        var ghost = "rgba(" + col.join(",") + ",0.28)";
+        var edge = "rgba(" + col.map(function (c) { return Math.round(c * 0.6); }).join(",") + ",1)";
         ctx.save();
         ctx.translate(ox + f[i * 3] * k, oy + f[i * 3 + 1] * k);
         ctx.rotate(f[i * 3 + 2]);
-        ctx.fillStyle = "rgba(" + col.join(",") + ",0.85)";
-        ctx.strokeStyle = "rgba(" + col.map(function (c) { return Math.round(c * 0.6); }).join(",") + ",1)";
-        ctx.beginPath();
+
+        // 1) Área de colisão, translúcida: mostra o offset, a aparência (3D)
+        //    e os miolos fechados (o do "O" colide como cheio).
         var o = b.outline;
+        ctx.fillStyle = ghost;
+        ctx.strokeStyle = ghost;
+        ctx.lineJoin = "round";
         if (o.kind === "circle") {
+            ctx.beginPath();
             ctx.arc(0, 0, o.radius * k, 0, Math.PI * 2);
             ctx.fill();
-            ctx.lineWidth = 1;
+        } else {
+            o.parts.forEach(function (part) {
+                ctx.beginPath();
+                part.forEach(function (v, j) { if (j === 0) ctx.moveTo(v.x * k, v.y * k); else ctx.lineTo(v.x * k, v.y * k); });
+                ctx.closePath();
+                // O offset positivo é um "raio" em volta da peça: traço
+                // grosso com cantos redondos desenha exatamente essa área.
+                if (o.radius * k > 0.75) {
+                    ctx.lineWidth = 2 * o.radius * k;
+                    ctx.stroke();
+                }
+                ctx.fill();
+            });
+        }
+
+        // 2) O desenho de verdade por cima (com os miolos), na mesma pose.
+        ctx.beginPath();
+        var anyOpen = false;
+        m.art.forEach(function (sp) {
+            if (!sp.pts.length) return;
+            sp.pts.forEach(function (v, j) {
+                var x = (v.x - b.x) * k, y = (v.y - b.y) * k;
+                if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            });
+            if (sp.closed) ctx.closePath(); else anyOpen = true;
+        });
+        ctx.fillStyle = solid;
+        ctx.fill("evenodd");
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = edge;
+        ctx.stroke();
+        if (anyOpen) {
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = solid;
             ctx.stroke();
+        }
+        if (o.kind === "circle") {
             // Raio marcado para dar para ver a bola girando.
             ctx.beginPath();
             ctx.moveTo(0, 0);
             ctx.lineTo(o.radius * k, 0);
-            ctx.stroke();
-        } else {
-            o.verts.forEach(function (v, j) {
-                if (j === 0) ctx.moveTo(v.x * k, v.y * k); else ctx.lineTo(v.x * k, v.y * k);
-            });
-            ctx.closePath();
-            // O offset positivo é um "raio" em volta do polígono: traço
-            // grosso com cantos redondos desenha exatamente essa área.
-            if (o.radius * k > 0.75) {
-                ctx.lineJoin = "round";
-                ctx.lineWidth = 2 * o.radius * k;
-                ctx.strokeStyle = ctx.fillStyle;
-                ctx.stroke();
-            }
-            ctx.fill();
             ctx.lineWidth = 1;
-            ctx.strokeStyle = "rgba(" + col.map(function (c) { return Math.round(c * 0.6); }).join(",") + ",1)";
+            ctx.strokeStyle = edge;
             ctx.stroke();
         }
         ctx.restore();
