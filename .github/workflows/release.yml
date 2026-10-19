@@ -1,6 +1,9 @@
 # Gera os instaladores e publica a release.
 #
-# Disparo: empurrar uma tag "v*" (ex.: git tag v1.0.0 && git push origin v1.0.0).
+# Disparo: empurrar uma tag "v*" (ex.: git tag v1.0.0 && git push origin v1.0.0)
+# OU, sem git: aba Actions > Release > Run workflow, informando a tag (ex.:
+# v1.0.0) — aí o próprio workflow cria a tag no commit escolhido e publica.
+# Rodar sem tag só gera os instaladores como artefatos, sem publicar nada.
 # Cada sistema é montado na própria plataforma (o electron-builder não gera .dmg
 # fora do macOS), e a release usa as notas de docs/release-notes/<tag>.md.
 # Os nomes dos arquivos são fixos para o README poder apontar sempre para
@@ -11,6 +14,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag da release a publicar (ex.: v1.0.0). Vazio = só gerar os instaladores."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -48,8 +56,10 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -58,6 +68,9 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          name: AutoPhysics ${{ github.ref_name }}
-          body_path: docs/release-notes/${{ github.ref_name }}.md
+          # Se a tag ainda não existe (disparo manual), é criada neste commit.
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: AutoPhysics ${{ env.TAG }}
+          body_path: docs/release-notes/${{ env.TAG }}.md
           files: artefatos/*
